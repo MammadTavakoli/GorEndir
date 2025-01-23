@@ -1,0 +1,6 @@
+yt-dlp
+youtube-transcript-api
+colorama
+pysrt
+copy
+tqdm
