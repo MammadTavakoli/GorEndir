@@ -130,6 +130,7 @@ class YouTubeDownloader:
                     self._print_colored(f"Video metadata is incomplete. Skipping: {video_url}", color="orange", emoji="⏭️")
                     return False
                 self._print_colored(video_info['title'], color="purple", emoji="🎬")
+                os.makedirs(self.save_directory, exist_ok=True)
                 url_file_path = os.path.join(self.save_directory, "_urls.txt")
                 if not force_download and self._is_url_already_saved(url_file_path, video_url):
                     self._print_colored("This URL has already been saved. Skipping download.", color="orange", emoji="⏭️")
@@ -161,7 +162,7 @@ class YouTubeDownloader:
 
     def _save_url_to_file(self, url_file_path: str, video_url: str):
         """Save the URL to a file."""
-        with open(url_file_path, "a", encoding="utf-8") as url_file:
+        with open(url_file_path, "a+", encoding="utf-8") as url_file:
             url_file.write(video_url + "\n")
 
     def download_subtitles(self, video_info_list: List[Dict[str, str]], reverse_download: bool = False):
