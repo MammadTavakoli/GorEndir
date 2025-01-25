@@ -130,17 +130,18 @@ class YouTubeDownloader:
                     self._print_colored(f"Video metadata is incomplete. Skipping: {video_url}", color="orange", emoji="⏭️")
                     return False
                 self._print_colored(video_info['title'], color="purple", emoji="🎬")
-                folder_name = sanitize_filename(f"{video_info['title']}_{video_info['uploader']}")
-                folder_path = os.path.join(self.save_directory, folder_name)
-                if not os.path.exists(folder_path):
-                    os.makedirs(folder_path)
-                os.chdir(folder_path)
-                self._print_colored(f"Current working directory: {os.getcwd()}", color="green", emoji="📂")
-                url_file_path = os.path.join(folder_path, "_urls.txt")
+                url_file_path = os.path.join(self.save_directory, "_urls.txt")
                 if not force_download and self._is_url_already_saved(url_file_path, video_url):
                     self._print_colored("This URL has already been saved. Skipping download.", color="orange", emoji="⏭️")
                     return False
                 self._save_url_to_file(url_file_path, video_url)
+                folder_name = sanitize_filename(f"{video_info['title']}_{video_info['uploader']}")
+                folder_path = os.path.join(self.save_directory, "Download_video", folder_name)
+                if not os.path.exists(folder_path):
+                    os.makedirs(folder_path)
+                os.chdir(folder_path)
+                self._print_colored(f"Current working directory: {os.getcwd()}", color="green", emoji="📂")
+                
                 self._print_colored("Folder created and URL saved successfully.", color="lotus_green", emoji="✅")
                 return True
         except yt_dlp.DownloadError as e:

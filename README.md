@@ -64,7 +64,7 @@ drive.mount('/content/drive')
 from gorendir.downloader import YouTubeDownloader
 
 # Set the path to save the downloaded videos (Google Drive)
-save_directory = "/content/drive/MyDrive/YouTube/Download_video"  # Change this path if needed
+save_directory = "/content/drive/MyDrive/YouTube/"  # Change this path if needed
 
 # Initialize the downloader with subtitle languages
 downloader = YouTubeDownloader(
