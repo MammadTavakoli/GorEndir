@@ -291,8 +291,8 @@ class YouTubeDownloader:
             reverse_download: Whether to download in reverse order.
         """
         if isinstance(video_url, dict) and len(video_url) == 1:
-            video_url = list(video_url.keys())[0]
             playlist_start = list(video_url.values())[0]
+            video_url = list(video_url.keys())[0]
         
         video_id = self._extract_video_id(video_url)
         if video_id:
