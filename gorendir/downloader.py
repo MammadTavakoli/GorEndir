@@ -143,29 +143,17 @@ class YouTubeDownloader:
             "noplaylist": True,
         }
 
-    def _process_entries(self, entries: List[Dict], start_index: int, reverse: bool = False) -> List[Dict[str, str]]:
-        """Process playlist entries with correct numbering for reverse order."""
+    def _process_entries(self, entries: List[Dict], start_number: int) -> List[Dict[str, str]]:
+        """Process playlist entries with increasing numbering."""
         video_info = []
-        if reverse:
-            # Start numbering from playlist_start and decrease
-            counter = start_index
-            for entry in entries:
-                if entry:
-                    video_info.append({
-                        "id": entry["id"],
-                        "filename": f"{str(counter).zfill(2)}_{sanitize_filename(entry['title'])}"
-                    })
-                    counter -= 1  # Decrease counter for reverse order
-        else:
-            # Start numbering from playlist_start and increase
-            counter = start_index
-            for entry in entries:
-                if entry:
-                    video_info.append({
-                        "id": entry["id"],
-                        "filename": f"{str(counter).zfill(2)}_{sanitize_filename(entry['title'])}"
-                    })
-                    counter += 1
+        counter = start_number
+        for entry in entries:
+            if entry:
+                video_info.append({
+                    "id": entry["id"],
+                    "filename": f"{str(counter).zfill(2)}_{sanitize_filename(entry['title'])}"
+                })
+                counter += 1  # Always increase, regardless of download direction
         return video_info
 
     def _download_subtitle(self, video_info: Dict[str, str]) -> None:
@@ -205,7 +193,7 @@ class YouTubeDownloader:
         force_download: bool,
         reverse_download: bool
     ) -> None:
-        """Download a single video or playlist with reverse order to first video."""
+        """Download a single video or playlist with reverse order from playlist_start to 1."""
         video_id = self._extract_video_id(video_url)
         if video_id:
             video_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -229,22 +217,28 @@ class YouTubeDownloader:
                     if not entries:
                         self._print_colored(f"Empty playlist: {video_url}", "orange", "⏭️")
                         return
+                    total_videos = len(entries)
                     start_idx = max(0, playlist_start - 1)  # Convert to 0-based index
                     if reverse_download:
-                        # Take entries from index 0 up to and including playlist_start
-                        filtered_entries = entries[:start_idx + 1][::-1]  # Reverse from start to 0
+                        # Download from playlist_start to 1 in reverse order
+                        filtered_entries = entries[:start_idx + 1][::-1]  # 0 to start_idx, reversed
+                        # Calculate autonumber_start: total_videos - playlist_start + 1
+                        autonumber_start = total_videos - playlist_start + 1
                     else:
-                        # Take entries from playlist_start onward
+                        # Normal order from playlist_start onward
                         filtered_entries = entries[start_idx:]
+                        autonumber_start = playlist_start
                     urls = [entry["webpage_url"] for entry in filtered_entries]
-                    video_info_list = self._process_entries(filtered_entries, playlist_start, reverse_download)
+                    video_info_list = self._process_entries(filtered_entries, autonumber_start)
                 else:
                     urls = [video_url]
                     video_info_list = [{"id": info["id"], "filename": f"01_{sanitize_filename(info['title'])}"}]
+                    autonumber_start = 1
 
-                ydl_opts = self._get_ydl_options(playlist_start if not reverse_download else playlist_start)
+                ydl_opts = self._get_ydl_options(autonumber_start)
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     if not skip_download:
+                        self._print_colored(f"Downloading {len(urls)} videos...", "blue", "📥")
                         ydl.download(urls)
                     with ThreadPoolExecutor(max_workers=4) as executor:
                         executor.map(self._download_subtitle, video_info_list)
