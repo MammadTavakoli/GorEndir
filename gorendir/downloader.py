@@ -3,7 +3,7 @@ import re
 import yt_dlp
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 from youtube_transcript_api.formatters import SRTFormatter
-from typing import List, Dict, Optional, Union, Tuple
+from typing import List, Dict, Optional, Union
 from .utils import sanitize_filename, convert_all_srt_to_text, rename_files_in_folder
 import copy
 import logging
@@ -22,7 +22,6 @@ if not IN_COLAB:
     from colorama import Fore, Style, init
     init(autoreset=True)
 
-# Constants
 DEFAULT_SUBTITLE_LANGUAGES = ["az", "en", "fa", "tr"]
 DEFAULT_MAX_RESOLUTION = 1080
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
@@ -37,27 +36,16 @@ class YouTubeDownloader:
         max_resolution: int = DEFAULT_MAX_RESOLUTION,
         log_level: str = "INFO"
     ):
-        """
-        Initialize the YouTubeDownloader.
-
-        Args:
-            save_directory: Directory to save downloaded content.
-            subtitle_languages: List of subtitle languages to download.
-            max_resolution: Maximum video resolution.
-            log_level: Logging level ("DEBUG", "INFO", "WARNING", "ERROR").
-        """
-        self.save_directory = Path(save_directory)  # Use Path for cross-platform compatibility
+        self.save_directory = Path(save_directory)
         self.subtitle_languages = subtitle_languages or DEFAULT_SUBTITLE_LANGUAGES
         self.max_resolution = max_resolution
         self._setup_logging(log_level)
 
     def _setup_logging(self, log_level: str):
-        """Configure logging for the class."""
         logging.basicConfig(level=log_level.upper(), format=LOG_FORMAT)
         self.logger = logging.getLogger(__name__)
 
     def _print_colored(self, text: str, color: str = "white", emoji: str = ""):
-        """Print colored text with logging fallback."""
         message = f"{emoji} {text}"
         self.logger.info(text)
         if IN_COLAB:
@@ -80,7 +68,6 @@ class YouTubeDownloader:
             print(f"{color_code}{message}{Style.RESET_ALL}")
 
     def _print_ascii_art(self):
-        """Display ASCII art for the package."""
         ascii_art = r"""
     ╔═══════════════════════════════════════════════════════════════════╗
     ║   ██████╗  ██████╗ ██████╗ ███████╗███╗   ██╗██████╗ ██╗██████╗   ║
@@ -99,7 +86,6 @@ class YouTubeDownloader:
 
     @contextmanager
     def _change_directory(self, path: Path):
-        """Context manager to temporarily change the working directory."""
         original_dir = os.getcwd()
         os.chdir(path)
         try:
@@ -108,7 +94,6 @@ class YouTubeDownloader:
             os.chdir(original_dir)
 
     def _create_video_folder(self, video_url: str, force_download: bool = False) -> Optional[Path]:
-        """Create a folder for the video and track the URL."""
         try:
             with yt_dlp.YoutubeDL({"ignoreerrors": True, "quiet": True}) as ydl:
                 info = ydl.extract_info(video_url, download=False)
@@ -135,21 +120,17 @@ class YouTubeDownloader:
             return None
 
     def _is_url_already_saved(self, url_file: Path, video_url: str) -> bool:
-        """Check if a URL is already tracked."""
         return url_file.exists() and video_url in url_file.read_text(encoding="utf-8").splitlines()
 
     def _save_url_to_file(self, url_file: Path, video_url: str):
-        """Append a URL to the tracking file."""
         with url_file.open("a+", encoding="utf-8") as f:
             f.write(f"{video_url}\n")
 
     def _extract_video_id(self, url: str) -> Optional[str]:
-        """Extract video ID from a URL."""
         match = re.search(r'(?<=v=)[^&#]+', url)
         return match.group() if match else None
 
     def _get_ydl_options(self, start_index: int) -> Dict:
-        """Return yt-dlp configuration options."""
         return {
             "format": f"(bestvideo[height<={self.max_resolution}]+bestvideo[height<=720][vcodec^=avc1]+bestaudio/best)",
             "outtmpl": "%(autonumber)02d_%(title)s.%(ext)s",
@@ -162,21 +143,32 @@ class YouTubeDownloader:
             "noplaylist": True,
         }
 
-    def _process_entries(self, entries: List[Dict], start_index: int) -> List[Dict[str, str]]:
-        """Process playlist entries into video info."""
+    def _process_entries(self, entries: List[Dict], start_index: int, reverse: bool = False) -> List[Dict[str, str]]:
+        """Process playlist entries with correct numbering for reverse order."""
         video_info = []
-        counter = start_index
-        for entry in entries:
-            if entry:
-                video_info.append({
-                    "id": entry["id"],
-                    "filename": f"{str(counter).zfill(2)}_{sanitize_filename(entry['title'])}"
-                })
-                counter += 1
+        if reverse:
+            # Start numbering from playlist_start and decrease
+            counter = start_index
+            for entry in entries:
+                if entry:
+                    video_info.append({
+                        "id": entry["id"],
+                        "filename": f"{str(counter).zfill(2)}_{sanitize_filename(entry['title'])}"
+                    })
+                    counter -= 1  # Decrease counter for reverse order
+        else:
+            # Start numbering from playlist_start and increase
+            counter = start_index
+            for entry in entries:
+                if entry:
+                    video_info.append({
+                        "id": entry["id"],
+                        "filename": f"{str(counter).zfill(2)}_{sanitize_filename(entry['title'])}"
+                    })
+                    counter += 1
         return video_info
 
     def _download_subtitle(self, video_info: Dict[str, str]) -> None:
-        """Download subtitles for a single video."""
         video_id, filename = video_info["id"], video_info["filename"]
         try:
             sublangs = copy.deepcopy(self.subtitle_languages)
@@ -213,7 +205,7 @@ class YouTubeDownloader:
         force_download: bool,
         reverse_download: bool
     ) -> None:
-        """Download a single video or playlist."""
+        """Download a single video or playlist with reverse order to first video."""
         video_id = self._extract_video_id(video_url)
         if video_id:
             video_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -237,22 +229,25 @@ class YouTubeDownloader:
                     if not entries:
                         self._print_colored(f"Empty playlist: {video_url}", "orange", "⏭️")
                         return
-                    start_idx = max(0, playlist_start - 1)
-                    filtered_entries = entries[start_idx:]
+                    start_idx = max(0, playlist_start - 1)  # Convert to 0-based index
                     if reverse_download:
-                        filtered_entries = filtered_entries[::-1]
+                        # Take entries from index 0 up to and including playlist_start
+                        filtered_entries = entries[:start_idx + 1][::-1]  # Reverse from start to 0
+                    else:
+                        # Take entries from playlist_start onward
+                        filtered_entries = entries[start_idx:]
                     urls = [entry["webpage_url"] for entry in filtered_entries]
-                    video_info_list = self._process_entries(filtered_entries, playlist_start)
+                    video_info_list = self._process_entries(filtered_entries, playlist_start, reverse_download)
                 else:
                     urls = [video_url]
                     video_info_list = [{"id": info["id"], "filename": f"01_{sanitize_filename(info['title'])}"}]
 
-                ydl_opts = self._get_ydl_options(playlist_start)
+                ydl_opts = self._get_ydl_options(playlist_start if not reverse_download else playlist_start)
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     if not skip_download:
                         ydl.download(urls)
                     with ThreadPoolExecutor(max_workers=4) as executor:
-                        executor.map(self._download_subtitle, video_info_list if not reverse_download else reversed(video_info_list))
+                        executor.map(self._download_subtitle, video_info_list)
                 self._print_colored("Download completed.", "green", "✅")
             except yt_dlp.DownloadError as e:
                 self._print_colored(f"Download failed: {e}", "alizarin", "❌")
@@ -265,20 +260,8 @@ class YouTubeDownloader:
         playlist_start: int = 1,
         skip_download: bool = False,
         force_download: bool = False,
-        reverse_download: bool = False,
-        max_videos: Optional[int] = None
+        reverse_download: bool = False
     ) -> None:
-        """
-        Download videos or playlists with enhanced options.
-
-        Args:
-            video_urls: URL, list of URLs, or dict with start indices.
-            playlist_start: Starting index (1-based).
-            skip_download: Skip video download.
-            force_download: Force re-download.
-            reverse_download: Reverse order from start point.
-            max_videos: Limit the number of videos to download.
-        """
         self._print_ascii_art()
         inputs = (
             [(url, start) for url, start in video_urls.items()] if isinstance(video_urls, dict) else
