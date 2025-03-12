@@ -1,6 +1,6 @@
 import os
 import re
-import yt_dlp
+import yt_dlp[browser-cookies]
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 from youtube_transcript_api.formatters import SRTFormatter
 from typing import List, Dict, Optional, Union
