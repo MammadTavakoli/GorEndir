@@ -183,6 +183,9 @@ class YouTubeDownloader:
                 video_id = video_info.get('id')
                 filename = sanitize_filename(video_info.get('filename'))
                 transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                print("***********"*10)
+                print(transcript_list)
+
                 for transcript in transcript_list:
                     lng = transcript.language_code
                     if lng in sublangs:
@@ -195,6 +198,9 @@ class YouTubeDownloader:
                             subtitle_file.write(srt_content)
                         sublangs.remove(lng)
                 first_transcript = next((t for t in transcript_list if t.language_code), None)
+                print("***********"*10)
+                print(first_transcript)
+                
                 if first_transcript:
                     for tr_lang in sublangs:
                         try:
