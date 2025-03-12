@@ -178,7 +178,7 @@ class YouTubeDownloader:
 
         total_videos = len(video_info_list)
         for idx, video_info in enumerate(video_info_list, start=1):
-            try:
+            # try:
                 sublangs = copy.deepcopy(self.subtitle_languages)
                 video_id = video_info.get('id')
                 filename = sanitize_filename(video_info.get('filename'))
@@ -207,10 +207,10 @@ class YouTubeDownloader:
                                 subtitle_file.write(srt_content)
                         except Exception as e:
                             self._print_colored(f"Error downloading translated subtitles to {tr_lang} for: {filename}. Error: {e}", color="alizarin", emoji="❌")
-            except TranscriptsDisabled:
-                self._print_colored(f"Subtitles are disabled for: {filename}", color="orange", emoji="🚫")
-            except Exception as e:
-                self._print_colored(f"Error downloading subtitles for: {filename}. Error: {e}", color="maroon", emoji="❌")
+            # except TranscriptsDisabled:
+            #     self._print_colored(f"Subtitles are disabled for: {filename}", color="orange", emoji="🚫")
+            # except Exception as e:
+            #     self._print_colored(f"Error downloading subtitles for: {filename}. Error: {e}", color="maroon", emoji="❌")
 
     def download_video(
         self,
