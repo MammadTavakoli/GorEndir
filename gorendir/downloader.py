@@ -175,33 +175,29 @@ class YouTubeDownloader:
         """
         if reverse_download:
             video_info_list = list(reversed(video_info_list))
-        print(video_info_list)
+
         total_videos = len(video_info_list)
         for idx, video_info in enumerate(video_info_list, start=1):
-            # try:
+            try:
                 sublangs = copy.deepcopy(self.subtitle_languages)
                 video_id = video_info.get('id')
                 filename = sanitize_filename(video_info.get('filename'))
                 transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-                print("******** transcript_list ***"*10)
-                print(transcript_list)
 
                 for transcript in transcript_list:
                     lng = transcript.language_code
                     if lng in sublangs:                        
-                        srt = YouTubeTranscriptApi.get_transcript(video_id, languages=[lng])                        
+                        # srt = YouTubeTranscriptApi.get_transcript(video_id, languages=[lng])        
+                        srt = transcript.fetch(video_id, languages=[lng])                
                         formatter = SRTFormatter()
-                        srt_content = formatter.format_transcript(srt)
-                        print(srt, " @"*10)
+                        srt_content = formatter.format_transcript(srt)                        
                         numbered_idx = total_videos - idx + 1 if reverse_download else idx
                         self._print_colored(f"Downloading {lng} subtitles for: {filename}", color="blue", emoji="📄")
                         with open(rf"{filename}.{lng}.srt", "w", encoding="utf-8") as subtitle_file:
                             subtitle_file.write(srt_content)
                         sublangs.remove(lng)
+
                 first_transcript = next((t for t in transcript_list if t.language_code), None)
-                print("******* first_transcript ****"*10)
-                print(first_transcript)
-                
                 if first_transcript:
                     for tr_lang in sublangs:
                         try:
@@ -214,10 +210,10 @@ class YouTubeDownloader:
                                 subtitle_file.write(srt_content)
                         except Exception as e:
                             self._print_colored(f"Error downloading translated subtitles to {tr_lang} for: {filename}. Error: {e}", color="alizarin", emoji="❌")
-            # except TranscriptsDisabled:
-            #     self._print_colored(f"Subtitles are disabled for: {filename}", color="orange", emoji="🚫")
-            # except Exception as e:
-            #     self._print_colored(f"Error downloading subtitles for: {filename}. Error: {e}", color="maroon", emoji="❌")
+            except TranscriptsDisabled:
+                self._print_colored(f"Subtitles are disabled for: {filename}", color="orange", emoji="🚫")
+            except Exception as e:
+                self._print_colored(f"Error downloading subtitles for: {filename}. Error: {e}", color="maroon", emoji="❌")
 
     def download_video(
         self,
