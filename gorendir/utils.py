@@ -21,7 +21,7 @@ def sanitize_filename_2(filename: str) -> str:
         filename, 
         flags=re.UNICODE
     )
-    sanitized = re.sub(r'_+', '_', sanitized).strip(' _')
+    sanitized = re.sub(r'_+', '_', sanitized).strip(' ')
     return sanitized or 'untitled'
 
 def sanitize_filename(filename):
