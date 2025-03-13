@@ -175,7 +175,7 @@ class YouTubeDownloader:
         """
         if reverse_download:
             video_info_list = list(reversed(video_info_list))
-
+        print(video_info_list)
         total_videos = len(video_info_list)
         for idx, video_info in enumerate(video_info_list, start=1):
             # try:
