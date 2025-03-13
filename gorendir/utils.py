@@ -6,13 +6,21 @@ from tqdm import tqdm  # For progress bars
 import re
 
 
+import re
+
 def sanitize_filename_2(filename: str) -> str:
     """
-    Sanitizes filenames to include Unicode letters, numbers, and spaces.
-    - Replaces all invalid characters (including '/') with underscores.
-    - Collapses underscores, trims edges, and handles empty results.
+    Sanitizes filenames to include Unicode letters, numbers, spaces, and dots.
+    - Allows dots (.) for file extensions
+    - Replaces other invalid characters with underscores
+    - Collapses underscores, trims edges, and handles empty results
     """
-    sanitized = re.sub(r'[^\w\s]', '_', filename, flags=re.UNICODE)
+    sanitized = re.sub(
+        r'[^\w\s.]',  # Allow letters, numbers, spaces, dots, and underscores
+        '_', 
+        filename, 
+        flags=re.UNICODE
+    )
     sanitized = re.sub(r'_+', '_', sanitized).strip(' _')
     return sanitized or 'untitled'
 
