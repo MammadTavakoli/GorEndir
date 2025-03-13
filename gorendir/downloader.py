@@ -189,6 +189,7 @@ class YouTubeDownloader:
                 for transcript in transcript_list:
                     lng = transcript.language_code
                     if lng in sublangs:
+                        print(lng, " @"*10)
                         srt = YouTubeTranscriptApi.get_transcript(video_id, languages=[lng])
                         formatter = SRTFormatter()
                         srt_content = formatter.format_transcript(srt)
