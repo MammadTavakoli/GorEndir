@@ -5,6 +5,17 @@ from tqdm import tqdm  # For progress bars
 
 import re
 
+
+def sanitize_filename_2(filename: str) -> str:
+    """
+    Sanitizes filenames to include Unicode letters, numbers, and spaces.
+    - Replaces all invalid characters (including '/') with underscores.
+    - Collapses underscores, trims edges, and handles empty results.
+    """
+    sanitized = re.sub(r'[^\w\s]', '_', filename, flags=re.UNICODE)
+    sanitized = re.sub(r'_+', '_', sanitized).strip(' _')
+    return sanitized or 'untitled'
+
 def sanitize_filename(filename):
     """
     Sanitizes a filename by replacing invalid characters with underscores.
@@ -85,7 +96,7 @@ def rename_files_in_folder(folder_path):
         for folder_name, _, filenames in os.walk(folder_path):
             for filename in filenames:
                 # Sanitize the filename
-                new_filename = sanitize_filename(filename)
+                new_filename = sanitize_filename_2(filename)
 
                 # Create full file paths
                 old_file_path = os.path.join(folder_name, filename)
