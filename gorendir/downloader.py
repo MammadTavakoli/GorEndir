@@ -189,7 +189,7 @@ class YouTubeDownloader:
                 for transcript in transcript_list:
                     lng = transcript.language_code                                      
                         # srt = YouTubeTranscriptApi.get_transcript(video_id, languages=[lng])        
-                    srt = transcript.fetch(video_id, languages=[lng])                
+                    srt = transcript.fetch()                
                     formatter = SRTFormatter()
                     srt_content = formatter.format_transcript(srt)                        
                     numbered_idx = total_videos - idx + 1 if reverse_download else idx
