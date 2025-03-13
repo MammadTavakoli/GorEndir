@@ -173,6 +173,8 @@ class YouTubeDownloader:
             video_info_list: List of video information dictionaries.
             reverse_download: Whether to download subtitles in reverse order.
         """
+        ytt_api = YouTubeTranscriptApi()
+
         if reverse_download:
             video_info_list = list(reversed(video_info_list))
 
@@ -185,16 +187,16 @@ class YouTubeDownloader:
                 transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
                 for transcript in transcript_list:
-                    lng = transcript.language_code
-                    if lng in sublangs:                        
+                    lng = transcript.language_code                                      
                         # srt = YouTubeTranscriptApi.get_transcript(video_id, languages=[lng])        
-                        srt = transcript.fetch(video_id, languages=[lng])                
-                        formatter = SRTFormatter()
-                        srt_content = formatter.format_transcript(srt)                        
-                        numbered_idx = total_videos - idx + 1 if reverse_download else idx
-                        self._print_colored(f"Downloading {lng} subtitles for: {filename}", color="blue", emoji="📄")
-                        with open(rf"{filename}.{lng}.srt", "w", encoding="utf-8") as subtitle_file:
-                            subtitle_file.write(srt_content)
+                    srt = transcript.fetch(video_id, languages=[lng])                
+                    formatter = SRTFormatter()
+                    srt_content = formatter.format_transcript(srt)                        
+                    numbered_idx = total_videos - idx + 1 if reverse_download else idx
+                    self._print_colored(f"Downloading {lng} subtitles for: {filename}", color="blue", emoji="📄")
+                    with open(rf"{filename}.{lng}.srt", "w", encoding="utf-8") as subtitle_file:
+                        subtitle_file.write(srt_content)
+                    if lng in sublangs:
                         sublangs.remove(lng)
 
                 first_transcript = next((t for t in transcript_list if t.language_code), None)
