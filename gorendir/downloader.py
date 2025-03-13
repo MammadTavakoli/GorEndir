@@ -143,6 +143,10 @@ class YouTubeDownloader:
                 os.chdir(folder_path)
                 self._print_colored(f"Current working directory: {os.getcwd()}", color="green", emoji="📂")
                 
+                # Save the URL in a text file
+                url_file_path = os.path.join(folder_path, "_url.txt")
+                with open(url_file_path, "w", encoding="utf-8") as f:
+                    f.write(video_url)
                 self._print_colored("Folder created and URL saved successfully.", color="lotus_green", emoji="✅")
                 return True
         except yt_dlp.DownloadError as e:
