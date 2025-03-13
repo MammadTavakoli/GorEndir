@@ -14,7 +14,7 @@ def sanitize_filename(filename):
     filename = filename.replace('/', '⧸')
     
     # Replace other invalid characters with underscores
-    invalid_chars_pattern = r'[<>:"/\\|?*：]'
+    invalid_chars_pattern = r'[<>:"/\\|｜?*：]'
     return re.sub(invalid_chars_pattern, '_', filename)
 
 def convert_srt_to_text(srt_file_path, append_text='*******'):
