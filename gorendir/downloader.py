@@ -97,6 +97,8 @@ class YouTubeDownloader:
             "autonumber_start": start,
             "writesubtitles": write_subs,
             "writeautomaticsub": write_subs,
+            "write_auto_sub": write_subs,
+            "sub_lang": "en",
             "subtitleslangs": self.subtitle_languages,
             "ignoreerrors": True,
             "simulate": False,
