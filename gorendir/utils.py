@@ -5,9 +5,6 @@ from tqdm import tqdm  # For progress bars
 
 import re
 
-
-import re
-
 def sanitize_filename_2(filename: str) -> str:
     """
     Sanitizes filenames to include Unicode letters, numbers, spaces, and dots.
@@ -104,7 +101,8 @@ def rename_files_in_folder(folder_path):
         for folder_name, _, filenames in os.walk(folder_path):
             for filename in filenames:
                 # Sanitize the filename
-                new_filename = sanitize_filename_2(filename)
+                # new_filename = sanitize_filename_2(filename)
+                new_filename = sanitize_filename(filename)
 
                 # Create full file paths
                 old_file_path = os.path.join(folder_name, filename)

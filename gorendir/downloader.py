@@ -227,7 +227,8 @@ class YouTubeDownloader:
         playlist_start: int = 1,
         skip_download: bool = False,
         force_download: bool = False,
-        reverse_download: bool = False
+        reverse_download: bool = False,
+        yt_dlp_writesubtitles: bool = False
     ):
         """
         Download a single video, a list of videos, or a playlist of videos.
@@ -252,7 +253,8 @@ class YouTubeDownloader:
                     playlist_start=start_index,
                     skip_download=skip_download,
                     force_download=force_download,
-                    reverse_download=reverse_download
+                    reverse_download=reverse_download,
+                    yt_dlp_writesubtitles=yt_dlp_writesubtitles
                 )
         elif isinstance(video_urls, str):
             # Handle single video URL
@@ -262,7 +264,8 @@ class YouTubeDownloader:
                 playlist_start=playlist_start,
                 skip_download=skip_download,
                 force_download=force_download,
-                reverse_download=reverse_download
+                reverse_download=reverse_download,
+                    yt_dlp_writesubtitles=yt_dlp_writesubtitles
             )
         elif isinstance(video_urls, list):
             # Handle list of video URLs
@@ -273,7 +276,8 @@ class YouTubeDownloader:
                     playlist_start=playlist_start,
                     skip_download=skip_download,
                     force_download=force_download,
-                    reverse_download=reverse_download
+                    reverse_download=reverse_download,
+                    yt_dlp_writesubtitles=yt_dlp_writesubtitles
                 )
         else:
             raise ValueError("Invalid input type for video_urls. Expected str, list, or dict.")
@@ -288,7 +292,9 @@ class YouTubeDownloader:
         playlist_start: int,
         skip_download: bool,
         force_download: bool,
-        reverse_download: bool
+        reverse_download: bool,
+        yt_dlp_writesubtitles: bool
+
     ):
         """
         Internal method to handle the download of a single video or playlist.
@@ -309,7 +315,7 @@ class YouTubeDownloader:
             video_url = f"https://www.youtube.com/watch?v={video_id}"
         if not self.create_video_folder(video_url, force_download) and not force_download:
             return
-        ydl_options = self._get_ydl_options(playlist_start, reverse_download)
+        ydl_options = self._get_ydl_options(playlist_start, reverse_download, yt_dlp_writesubtitles)
         video_info_list = []
         try:
             with yt_dlp.YoutubeDL(ydl_options) as ydl:
@@ -342,7 +348,7 @@ class YouTubeDownloader:
         video_id_match = re.search(r'(?<=v=)[^&#]+', video_url)
         return video_id_match.group() if video_id_match else None
 
-    def _get_ydl_options(self, playlist_start: int, reverse_download: bool = False) -> Dict:
+    def _get_ydl_options(self, playlist_start: int, reverse_download: bool = False, yt_dlp_writesubtitles: bool = False) -> Dict:
         """Get the options for youtube-dl."""
         options = {
             "format": f"(bestvideo[height<={self.max_resolution}]+bestvideo[height<=720][vcodec^=avc1]+bestaudio/best)",
@@ -355,8 +361,9 @@ class YouTubeDownloader:
             "writeinfojson": False,
             "writeannotations": True,
             "writethumbnail": False,
-            "writesubtitles": False,
-            "writeautomaticsub": False,
+            "writesubtitles": yt_dlp_writesubtitles,
+            "writeautomaticsub": yt_dlp_writesubtitles,
+            "subtitleslangs": self.subtitle_languages,
             "ignoreerrors": True,           
         }
         if reverse_download:
