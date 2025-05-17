@@ -1,4 +1,5 @@
 import re
+import os
 import time
 import random
 import logging
@@ -82,6 +83,7 @@ class YouTubeDownloader:
             raise DownloadError("URL already saved; skipping.")
         log_file.open("a+", encoding="utf-8").write(url + "\n")
         (folder / "_url.txt").write_text(url, encoding="utf-8")
+        os.chdir(folder)
         logger.info(f"Folder ready: {folder}")
         return folder
 
