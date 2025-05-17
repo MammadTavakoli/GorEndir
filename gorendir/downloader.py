@@ -151,11 +151,15 @@ class YouTubeDownloader:
     ) -> None:
         """Download videos (single, list, or dict) and their subtitles."""
         if isinstance(video_urls, dict):
-            tasks = list(video_urls.items())
+            tasks = [(list(video_urls.keys())[0], list(video_urls.values())[0])]
         elif isinstance(video_urls, str):
             tasks = [(video_urls, playlist_start)]
         else:
-            tasks = [(u, playlist_start) for u in video_urls]
+            tasks = [
+                (list(u.keys())[0], list(u.values())[0]) if isinstance(u, dict) and len(u) == 1
+                else (u, playlist_start)
+                for u in video_urls
+            ]
 
         self._print_ascii_art()
 
