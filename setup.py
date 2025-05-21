@@ -5,11 +5,10 @@ setup(
     version="0.1",
     packages=find_packages(),
     install_requires=[
-        "yt-dlp",      
-        "youtube-transcript-api",
-        "colorama",       
-        "pysrt",
-        "copy",
+        "yt-dlp",
+        "yt-dlp[browser-cookies]",
+        "youtube-transcript-api",          
+        "pysrt",        
         "tqdm",
         "pytube3"
     ],
