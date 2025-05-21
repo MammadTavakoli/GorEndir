@@ -2,6 +2,7 @@ import re
 import os
 import time
 import random
+import copy
 import logging
 import yt_dlp
 from pathlib import Path
@@ -163,6 +164,7 @@ class YouTubeDownloader:
                     ydl.cache.remove()  # پاک‌سازی کش yt_dlp
                     playlist_info = ydl.extract_info(canonical, download=not skip_download) or {}
 
+                print("*"*10,"download subtitles", "*"*10)
                 entries = playlist_info.get("entries") or [playlist_info]
                 videos = self._process_playlist_entries(entries, start)
                 self.download_subtitles(videos, reverse_download)
@@ -195,7 +197,7 @@ class YouTubeDownloader:
                 video_id = video_info.get('id')
                 filename = sanitize_filename(video_info.get('filename'))
                 transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-
+                
                 for transcript in transcript_list:
                     lng = transcript.language_code
                         # srt = YouTubeTranscriptApi.get_transcript(video_id, languages=[lng])
