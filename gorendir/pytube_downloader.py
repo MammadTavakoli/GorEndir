@@ -1,5 +1,4 @@
 import os
-import re
 import logging
 from pathlib import Path
 from typing import List, Dict, Optional, Union
@@ -7,7 +6,6 @@ from typing import List, Dict, Optional, Union
 from pytube import YouTube
 from pytube.exceptions import VideoUnavailable
 
-# تنظیمات پیش‌فرض
 DEFAULT_SUBTITLE_LANGUAGES = ["az", "en", "fa", "tr"]
 DEFAULT_MAX_RESOLUTION = 1080
 
@@ -22,16 +20,9 @@ console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
 logger.addHandler(console_handler)
 
-
-# کلاس خطای سفارشی
+# خطای سفارشی
 class DownloadError(Exception):
     pass
-
-
-# پاکسازی نام فایل‌ها
-def sanitize_filename(name: str) -> str:
-    return re.sub(r"[\\/*?\"<>|]", "_", name)
-
 
 class YouTubeDownloader:
     def __init__(
@@ -63,7 +54,7 @@ class YouTubeDownloader:
         logger.info("\n" + art)
 
     def _create_folder(self, title: str, uploader: str, url: str, force: bool) -> Path:
-        folder_name = sanitize_filename(f"{title}_{uploader}")
+        folder_name = f"{title}_{uploader}"
         folder = self.save_directory / "Download_video" / folder_name
         folder.mkdir(parents=True, exist_ok=True)
 
@@ -123,7 +114,7 @@ class YouTubeDownloader:
 
                 numbered_title = f"{str(index).zfill(2)} - {title}"
                 logger.info(f"Downloading: {numbered_title}")
-                stream.download(output_path=str(folder), filename=sanitize_filename(numbered_title) + ".mp4")
+                stream.download(output_path=str(folder), filename=numbered_title + ".mp4")
 
                 self.download_captions(yt, folder, numbered_title)
 
@@ -140,7 +131,7 @@ class YouTubeDownloader:
                 caption = yt.captions.get_by_language_code(lang)
                 if caption:
                     srt = caption.generate_srt_captions()
-                    filename = folder / f"{sanitize_filename(title)}.{lang}.srt"
+                    filename = folder / f"{title}.{lang}.srt"
                     with open(filename, "w", encoding="utf-8") as f:
                         f.write(srt)
                     logger.info(f"Saved subtitles: {filename}")
