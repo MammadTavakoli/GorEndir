@@ -83,7 +83,7 @@ class YouTubeDownloader:
         self,
         video_urls: Union[str, Dict[str, int], List[Union[str, Dict[str, int]]]],
         force_download: bool = False,
-        reverse: bool = False
+        reverse_download: bool = False
     ) -> None:
         self._print_ascii_art()
 
@@ -104,7 +104,7 @@ class YouTubeDownloader:
             logger.error("Unsupported video_urls format.")
             return
 
-        if reverse:
+        if reverse_download:
             tasks.reverse()
 
         for index, (url, _) in enumerate(tasks, 1):
