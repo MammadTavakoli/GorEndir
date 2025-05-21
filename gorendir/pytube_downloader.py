@@ -1,5 +1,5 @@
 from pytube import YouTube, Playlist
-from pytube.exceptions import VideoUnavailable, RegexMatchError, LiveStreamError, AgeRestrictedError
+from pytube.exceptions import VideoUnavailable, RegexMatchError, LiveStreamError
 import os
 import logging
 from pathlib import Path
@@ -243,8 +243,7 @@ class pytube_YouTubeDownloader:
 
         except VideoUnavailable:
             logger.warning(f"Video unavailable: {url}")
-        except AgeRestrictedError:
-            logger.warning(f"Video is age-restricted and cannot be downloaded: {url}")
+        # Removed AgeRestrictedError as it's causing ImportError
         except LiveStreamError:
             logger.warning(f"Video is a live stream and cannot be downloaded: {url}")
         except RegexMatchError:
