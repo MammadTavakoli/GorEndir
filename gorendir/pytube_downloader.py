@@ -24,7 +24,7 @@ logger.addHandler(console_handler)
 class DownloadError(Exception):
     pass
 
-class YouTubeDownloader:
+class pytube_YouTubeDownloader:
     def __init__(
         self,
         save_directory: Union[str, Path],
