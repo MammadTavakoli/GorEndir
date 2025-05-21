@@ -4,8 +4,8 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Optional, Union
 
-from pytube3 import YouTube
-from pytube3.exceptions import VideoUnavailable
+from pytube import YouTube
+from pytube.exceptions import VideoUnavailable
 
 # تنظیمات پیش‌فرض
 DEFAULT_SUBTITLE_LANGUAGES = ["az", "en", "fa", "tr"]
