@@ -1,5 +1,5 @@
 yt-dlp
-pytube3
+pytube
 youtube-transcript-api
 pysrt
 copy

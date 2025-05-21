@@ -9,7 +9,7 @@ setup(
         "youtube-transcript-api",          
         "pysrt",        
         "tqdm",
-        "pytube3"
+        "pytube"
     ],
     description="A Python package to download YouTube videos and subtitles.",
     author="mohammad tavakoli heshejin",

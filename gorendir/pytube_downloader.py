@@ -159,11 +159,12 @@ class pytube_YouTubeDownloader:
             # and YouTube's changing HTML. Rely on pytube's internal parsing.
 
             # Ensure title is a string before sanitizing
-            title = playlist.title
+            # Call playlist.title as a method
+            title = playlist.title()
             if not isinstance(title, str):
                 logger.warning(f"Playlist title for {url} is not a string (type: {type(title)}). Defaulting to 'Untitled_Playlist'.")
                 title = "Untitled_Playlist"
-            title = title or "Untitled_Playlist" # Fallback for None or empty string
+            # No need for `title = title or "Untitled_Playlist"` here as the above check handles it
 
             sanitized_playlist_title = self._sanitize_filename(title)
             playlist_folder = self.save_directory / "Download_video" / f"Playlist_{sanitized_playlist_title}"
