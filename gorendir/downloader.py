@@ -182,59 +182,64 @@ class YouTubeDownloader:
 
                 entries = playlist_info.get("entries") or [playlist_info]
                 videos = self._process_playlist_entries(entries, start)
-                self.download_subtitles(videos, reverse_download, folder)
+                self.download_subtitles(videos, reverse_download)
 
             except DownloadError as e:
                 logger.warning(e)
             except Exception as e:
                 logger.error(f"Unexpected error for {canonical}: {e}")
 
-        convert_all_srt_to_text(self.save_directory, '*******')
-        rename_files_in_folder(self.save_directory)
+        # convert_all_srt_to_text(self.save_directory, '*******')
+        # rename_files_in_folder(self.save_directory)
 
-    def download_subtitles(
-        self,
-        video_list: List[Dict[str, str]],
-        reverse: bool,
-        folder: Path
-    ) -> None:
-        """Download existing and translated subtitles to پوشهٔ مشخص."""
-        api = YouTubeTranscriptApi()
-        vids = list(reversed(video_list)) if reverse else video_list
+    def download_subtitles(self, video_info_list: List[Dict[str, str]], reverse_download: bool = False):
+        """
+        Download subtitles for the videos in the list.
 
-        for idx, info in enumerate(vids, 1):
-            vid, fname = info["id"], info["filename"]
-            base = folder / fname
+        Args:
+            video_info_list: List of video information dictionaries.
+            reverse_download: Whether to download subtitles in reverse order.
+        """
+        ytt_api = YouTubeTranscriptApi()
+
+        if reverse_download:
+            video_info_list = list(reversed(video_info_list))
+
+        total_videos = len(video_info_list)
+        for idx, video_info in enumerate(video_info_list, start=1):
             try:
-                time.sleep(0.5 + random.random() * 0.5)
-                transcripts = api.list_transcripts(vid)
+                sublangs = copy.deepcopy(self.subtitle_languages)
+                video_id = video_info.get('id')
+                filename = sanitize_filename(video_info.get('filename'))
+                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
-                # زیرنویس‌های اصلی
-                for t in transcripts.transcripts:
-                    raw = self._fetch_with_retry(t)
-                    srt = SRTFormatter().format_transcript(raw)
-                    (base.with_suffix(f".{t.language_code}.srt")).write_text(srt, encoding="utf-8")
-                    logger.info(f"[{idx}] Saved subs {t.language_code} for {fname}")
+                for transcript in transcript_list:
+                    lng = transcript.language_code
+                        # srt = YouTubeTranscriptApi.get_transcript(video_id, languages=[lng])
+                    srt = transcript.fetch()
+                    formatter = SRTFormatter()
+                    srt_content = formatter.format_transcript(srt)
+                    numbered_idx = total_videos - idx + 1 if reverse_download else idx
+                    logger.info(f"Downloading {lng} subtitles for: {filename}")
+                    with open(rf"{filename}.{lng}.srt", "w", encoding="utf-8") as subtitle_file:
+                        subtitle_file.write(srt_content)
+                    if lng in sublangs:
+                        sublangs.remove(lng)
 
-                # ترجمه زیرنویس‌ها
-                existing = {t.language_code for t in transcripts.transcripts}
-                to_translate = set(self.subtitle_languages) - existing
-                default_transcript = (
-                    transcripts.find_manually_created_transcript
-                    if transcripts.manually_created_transcripts else
-                    transcripts.find_generated_transcript
-                )
-                for lang in to_translate:
-                    try:
-                        tr = default_transcript([lang]).translate(lang)
-                        raw = self._fetch_with_retry(tr)
-                        srt = SRTFormatter().format_transcript(raw)
-                        (base.with_suffix(f".{lang}.srt")).write_text(srt, encoding="utf-8")
-                        logger.info(f"[{idx}] Translated subs to {lang} for {fname}")
-                    except Exception as e:
-                        logger.error(f"Translate error ({lang}) for {fname}: {e}")
-
+                first_transcript = next((t for t in transcript_list if t.language_code), None)
+                if first_transcript:
+                    for tr_lang in sublangs:
+                        try:
+                            translated_transcript = first_transcript.translate(tr_lang)
+                            formatter = SRTFormatter()
+                            srt_content = formatter.format_transcript(translated_transcript.fetch())
+                            numbered_idx = total_videos - idx + 1 if reverse_download else idx
+                            logger.info(f"Downloading translated subtitles to {tr_lang} for: {filename}")
+                            with open(rf"{filename}.{tr_lang}.srt", "w", encoding="utf-8") as subtitle_file:
+                                subtitle_file.write(srt_content)
+                        except Exception as e:
+                            logger.error(f"Error downloading translated subtitles to {tr_lang} for: {filename}. Error: {e}")
             except TranscriptsDisabled:
-                logger.warning(f"[{idx}] Subtitles disabled for {fname}")
+                logger.error(f"Subtitles are disabled for: {filename}")
             except Exception as e:
-                logger.error(f"[{idx}] Error fetching subs for {fname}: {e}")
+                logger.error(f"Error downloading subtitles for: {filename}. Error: {e}")

@@ -1,6 +1,6 @@
+yt-dlp
 yt-dlp[browser-cookies]
 youtube-transcript-api
-colorama
 pysrt
 copy
 tqdm
