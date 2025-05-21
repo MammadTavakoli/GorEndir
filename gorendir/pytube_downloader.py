@@ -1,5 +1,11 @@
 from pytube import YouTube, Playlist
 from pytube.exceptions import VideoUnavailable, RegexMatchError, LiveStreamError
+try:
+    from pytube.exceptions import AgeRestrictedError # Attempt to import AgeRestrictedError
+except ImportError:
+    # If AgeRestrictedError is not available (older pytube versions), define a dummy exception
+    class AgeRestrictedError(Exception):
+        pass
 import os
 import logging
 from pathlib import Path
@@ -58,6 +64,10 @@ class pytube_YouTubeDownloader:
 
     def _sanitize_filename(self, filename: str) -> str:
         """Sanitizes a string to be used as a filename."""
+        # Ensure filename is a string before using regex
+        if not isinstance(filename, str):
+            filename = str(filename) # Convert to string representation if not already
+
         # Remove invalid characters for filenames
         filename = re.sub(r'[\\/:*?"<>|]', '', filename)
         # Replace spaces with underscores, or keep spaces if preferred
@@ -148,7 +158,13 @@ class pytube_YouTubeDownloader:
             # Removing playlist._video_regex as it might cause issues with newer pytube versions
             # and YouTube's changing HTML. Rely on pytube's internal parsing.
 
-            title = playlist.title or "Untitled_Playlist"
+            # Ensure title is a string before sanitizing
+            title = playlist.title
+            if not isinstance(title, str):
+                logger.warning(f"Playlist title for {url} is not a string (type: {type(title)}). Defaulting to 'Untitled_Playlist'.")
+                title = "Untitled_Playlist"
+            title = title or "Untitled_Playlist" # Fallback for None or empty string
+
             sanitized_playlist_title = self._sanitize_filename(title)
             playlist_folder = self.save_directory / "Download_video" / f"Playlist_{sanitized_playlist_title}"
             playlist_folder.mkdir(parents=True, exist_ok=True)
@@ -243,7 +259,8 @@ class pytube_YouTubeDownloader:
 
         except VideoUnavailable:
             logger.warning(f"Video unavailable: {url}")
-        # Removed AgeRestrictedError as it's causing ImportError
+        except AgeRestrictedError: # Now safely imported or a dummy exception
+            logger.warning(f"Video is age-restricted and cannot be downloaded: {url}")
         except LiveStreamError:
             logger.warning(f"Video is a live stream and cannot be downloaded: {url}")
         except RegexMatchError:
