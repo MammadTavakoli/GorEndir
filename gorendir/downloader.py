@@ -125,23 +125,6 @@ class YouTubeDownloader:
             cnt += 1
         return results
 
-    def _fetch_with_retry(self, transcript, max_retries: int = 5, base_delay: float = 1.0):
-        """
-        Fetch transcript with retry on HTTP 429 using exponential backoff.
-        """
-        for attempt in range(max_retries):
-            try:
-                return transcript.fetch()
-            except HTTPError as e:
-                status = getattr(e.response, "status_code", None)
-                if status == 429:
-                    delay = base_delay * (2 ** attempt) + random.random()
-                    logger.warning(f"Rate limited (429). retrying after {delay:.1f}s …")
-                    time.sleep(delay)
-                else:
-                    raise
-        raise DownloadError("Rate limited after multiple retries.")
-
     def download_video(
         self,
         video_urls: Union[str, List[str], Dict[str, int]],

@@ -1,20 +1,23 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="GörEndirik",
+    name="GörEndir",
     version="0.1",
     packages=find_packages(),
     install_requires=[
         "yt-dlp",
+        "yt-dlp[browser-cookies]",
         "youtube-transcript-api",
         "colorama",       
         "pysrt",
-        "tqdm"
+        "copy",
+        "tqdm",
+        "pytube3"
     ],
     description="A Python package to download YouTube videos and subtitles.",
     author="mohammad tavakoli heshejin",
     author_email="m.tavakoli.h@gmail.com",
-    url="https://github.com/MammadTavakoli/GorEndirik",
+    url="https://github.com/MammadTavakoli/GorEndir",
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
