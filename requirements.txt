@@ -1,5 +1,4 @@
 yt-dlp
-yt-dlp[browser-cookies]
 pytube3
 youtube-transcript-api
 pysrt

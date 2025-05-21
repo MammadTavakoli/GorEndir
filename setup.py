@@ -5,8 +5,7 @@ setup(
     version="0.1",
     packages=find_packages(),
     install_requires=[
-        "yt-dlp",
-        "yt-dlp[browser-cookies]",
+        "yt-dlp",       
         "youtube-transcript-api",          
         "pysrt",        
         "tqdm",
