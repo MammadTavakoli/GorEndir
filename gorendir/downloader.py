@@ -98,6 +98,7 @@ class YouTubeDownloader:
             "format": f"(bestvideo[height<={self.max_resolution}]+bestaudio/best)",
             "outtmpl": "%(autonumber)02d_%(title)s.%(ext)s",
             "autonumber_start": start,
+            "playlist_start": start,
             "writesubtitles": write_subs,
             "writeautomaticsub": write_subs,
             "write_auto_sub": write_subs,
@@ -108,6 +109,7 @@ class YouTubeDownloader:
         }
         if reverse:
             opts["playlistreverse"] = True
+        print(opts)
         return opts
 
     def _process_playlist_entries(
@@ -168,13 +170,12 @@ class YouTubeDownloader:
                 entries = playlist_info.get("entries") or [playlist_info]
                 videos = self._process_playlist_entries(entries, start)
                 self.download_subtitles(videos, reverse_download)
-
             except DownloadError as e:
                 logger.warning(e)
             except Exception as e:
                 logger.error(f"Unexpected error for {canonical}: {e}")
 
-        # convert_all_srt_to_text(self.save_directory, '*******')
+        convert_all_srt_to_text(self.save_directory, '*******')
         # rename_files_in_folder(self.save_directory)
 
     def download_subtitles(self, video_info_list: List[Dict[str, str]], reverse_download: bool = False):

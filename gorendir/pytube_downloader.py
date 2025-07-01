@@ -149,8 +149,8 @@ class pytube_YouTubeDownloader:
                 self._download_playlist(url, force_download, reverse_download)
             else:
                 self._download_single_video(url, force_download, index)
-            # Optional: Add a small delay between downloads to avoid rate limiting
-            # time.sleep(1)
+            # Add a small delay between downloads to avoid rate limiting
+            time.sleep(1)
 
     def _download_playlist(self, url: str, force: bool, reverse: bool):
         try:
@@ -158,13 +158,12 @@ class pytube_YouTubeDownloader:
             # Removing playlist._video_regex as it might cause issues with newer pytube versions
             # and YouTube's changing HTML. Rely on pytube's internal parsing.
 
-            # Ensure title is a string before sanitizing
-            # Call playlist.title as a method
-            title = playlist.title()
+            # Access playlist.title as an attribute, not a method
+            title = playlist.title
             if not isinstance(title, str):
                 logger.warning(f"Playlist title for {url} is not a string (type: {type(title)}). Defaulting to 'Untitled_Playlist'.")
                 title = "Untitled_Playlist"
-            # No need for `title = title or "Untitled_Playlist"` here as the above check handles it
+            title = title or "Untitled_Playlist" # Fallback for None or empty string
 
             sanitized_playlist_title = self._sanitize_filename(title)
             playlist_folder = self.save_directory / "Download_video" / f"Playlist_{sanitized_playlist_title}"
@@ -196,8 +195,8 @@ class pytube_YouTubeDownloader:
                 video_url = yt_obj.watch_url # Get the URL for the individual video
                 logger.info(f"Processing video {idx}/{len(videos)} in playlist: {video_url}")
                 self._download_single_video(video_url, force, idx, playlist_folder, is_playlist_item=True)
-                # Optional: Add a small delay between videos in a playlist
-                # time.sleep(0.5)
+                # Add a small delay between videos in a playlist
+                time.sleep(0.5)
 
         except RegexMatchError:
             logger.error(f"Failed to parse playlist URL '{url}'. This often means pytube needs an update or YouTube changed its layout. Try 'pip install --upgrade pytube'.")
