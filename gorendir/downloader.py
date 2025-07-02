@@ -93,19 +93,21 @@ class YouTubeDownloader:
         start: int,
         reverse: bool,
         write_subs: bool
-    ) -> dict:
+    ) -> dict:       
         opts = {
-            "format": f"(bestvideo[height<={self.max_resolution}]+bestaudio/best)",
+            "format": f"(bestvideo[height<={self.max_resolution}]+bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4])",
             "outtmpl": "%(autonumber)02d_%(title)s.%(ext)s",
             "autonumber_start": start,
-            "playlist_start": start,
+            "playliststart": start,
             "writesubtitles": write_subs,
             "writeautomaticsub": write_subs,
             "write_auto_sub": write_subs,
             "sub_lang": "en",
             "subtitleslangs": self.subtitle_languages,
             "ignoreerrors": True,
-            "simulate": False,
+            "simulate": False,            
+            "writedescription": True, # Download video description
+            "writeannotations": True, # Download annotations (comments)
         }
         if reverse:
             opts["playlistreverse"] = True
@@ -115,7 +117,8 @@ class YouTubeDownloader:
     def _process_playlist_entries(
         self,
         entries: List[dict],
-        start: int
+        start: int,
+        reverse_download: bool = False
     ) -> List[Dict[str, str]]:
         results, cnt = [], start
         for e in entries or []:
@@ -168,7 +171,7 @@ class YouTubeDownloader:
 
                 print("*"*10,"download subtitles", "*"*10)
                 entries = playlist_info.get("entries") or [playlist_info]
-                videos = self._process_playlist_entries(entries, start)
+                videos = self._process_playlist_entries(entries, start, reverse_download)
                 self.download_subtitles(videos, reverse_download)
             except DownloadError as e:
                 logger.warning(e)
