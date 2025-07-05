@@ -11,6 +11,7 @@ from requests.exceptions import HTTPError
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 from youtube_transcript_api.formatters import SRTFormatter
 from .utils import sanitize_filename, convert_all_srt_to_text, rename_files_in_folder
+from .vtt_to_srt import process_directory
 
 DEFAULT_SUBTITLE_LANGUAGES = ["az", "en", "fa", "tr"]
 DEFAULT_MAX_RESOLUTION = 1080
@@ -93,22 +94,38 @@ class YouTubeDownloader:
         start: int,
         reverse: bool,
         write_subs: bool
-    ) -> dict:       
+    ) -> dict: 
         opts = {
-            "format": f"(bestvideo[height<={self.max_resolution}]+bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4])",
+            # --- Quality and Formatting ---
+            # Simplified and more robust format selector.
+            # It selects the best video with the specified resolution (in MP4 container if available)
+            # and the best audio, merging them. Falls back to a complete best-quality file if merging fails.
+            "format": f"bestvideo[height<={self.max_resolution}][ext=mp4]+bestaudio[ext=m4a]/best[height<={self.max_resolution}][ext=mp4]/best",
             "outtmpl": "%(autonumber)02d_%(title)s.%(ext)s",
+            "writedescription": True,  # Download the video's description to a .description file.
+
+            # --- Playlist Handling ---
             "autonumber_start": start,
             "playliststart": start,
-            "writesubtitles": write_subs,
-            "writeautomaticsub": write_subs,
-            "write_auto_sub": write_subs,
-            "sub_lang": "en",
+            "ignoreerrors": True, # Good for downloading playlists where some videos might be unavailable.
+
+            # --- Subtitle Configuration ---
+            # This is the core of the improvement.
+            "writesubtitles": write_subs,      # Main switch to enable downloading of manual subtitles.
+            "writeautomaticsub": write_subs,  # Main switch to enable downloading of automatic subtitles as a fallback.
+
+            # Specifies a prioritized LIST of languages. yt-dlp will try them in order.
+            # It will first look for a manual subtitle for the first language, then an automatic one (if writeautomaticsub is True).
+            # If not found, it moves to the next language in the list.
             "subtitleslangs": self.subtitle_languages,
-            "ignoreerrors": True,
-            "simulate": False,            
-            "writedescription": True, # Download video description
-            "writeannotations": True, # Download annotations (comments)
-        }
+
+            # --- Deprecated / Redundant Options Removed ---
+            # "write_auto_sub": write_subs, # Incorrect key, the correct one is 'writeautomaticsub'.
+            # "sub_lang": "en",             # Redundant when using the more flexible 'subtitleslangs'.
+            # "writeannotations": True,     # Annotations were discontinued by YouTube in 2019. This option does nothing.
+            # "simulate": False,            # False is the default, so this line is not needed unless you toggle it programmatically.
+        }      
+ 
         if reverse:
             opts["playlistreverse"] = True
         print(opts)
@@ -177,8 +194,10 @@ class YouTubeDownloader:
                 logger.warning(e)
             except Exception as e:
                 logger.error(f"Unexpected error for {canonical}: {e}")
-
+        
+        process_directory(self.save_directory)    
         convert_all_srt_to_text(self.save_directory, '*******')
+        
         # rename_files_in_folder(self.save_directory)
 
     def download_subtitles(self, video_info_list: List[Dict[str, str]], reverse_download: bool = False):
@@ -203,8 +222,7 @@ class YouTubeDownloader:
                 transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
                 
                 for transcript in transcript_list:
-                    lng = transcript.language_code
-                        # srt = YouTubeTranscriptApi.get_transcript(video_id, languages=[lng])
+                    lng = transcript.language_code                       
                     srt = transcript.fetch()
                     formatter = SRTFormatter()
                     srt_content = formatter.format_transcript(srt)
