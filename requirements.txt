@@ -4,4 +4,4 @@ youtube-transcript-api
 pysrt
 copy
 tqdm
-requests 
+requests==2.32.4
