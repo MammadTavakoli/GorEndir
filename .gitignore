@@ -1,1 +1,9 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+Download_video/
+*.mp4
+*.srt
+*.vtt
+gorendir.log
 gorendir_colab_demo.ipynb

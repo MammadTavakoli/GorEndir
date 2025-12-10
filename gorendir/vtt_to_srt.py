@@ -1,10 +1,16 @@
 import re
-import os
-from pathlib import Path
-from youtube_transcript_api.formatters import SRTFormatter
 import logging
-from typing import List, Optional
-import chardet
+from pathlib import Path
+# خط زیر بسیار مهم است و باعث رفع خطای شما می‌شود
+from typing import List, Optional, Union 
+from youtube_transcript_api.formatters import SRTFormatter
+
+# سعی در ایمپورت chardet، اگر نبود utf-8 پیش‌فرض است
+try:
+    import chardet
+    HAS_CHARDET = True
+except ImportError:
+    HAS_CHARDET = False
 
 logger = logging.getLogger(__name__)
 
@@ -21,35 +27,41 @@ class TranscriptLine:
 def convert_to_seconds(time_str: str) -> float:
     """Convert VTT time format to seconds."""
     try:
+        # مدیریت فرمت‌های مختلف زمان (با یا بدون میلی‌ثانیه)
         if '.' in time_str:
-            hms, ms = time_str.split('.')
-            ms = ms[:3]  # Keep only milliseconds
+            main, ms = time_str.split('.')
+            ms = int(ms[:3].ljust(3, '0'))
+        elif ',' in time_str: # گاهی اوقات فرمت srt ممکن است قاطی شود
+            main, ms = time_str.split(',')
+            ms = int(ms[:3].ljust(3, '0'))
         else:
-            hms, ms = time_str, '000'
+            main, ms = time_str, 0
+            
+        parts = main.split(':')
+        if len(parts) == 3: # HH:MM:SS
+            h, m, s = parts
+        elif len(parts) == 2: # MM:SS
+            h, m, s = 0, parts[0], parts[1]
+        else:
+            return 0.0
         
-        h, m, s = hms.split(':')
         return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
     except Exception as e:
-        logger.error(f"Error converting time '{time_str}': {e}")
+        # logger.warning(f"Error converting time '{time_str}': {e}")
         return 0.0
 
 def detect_encoding(file_path: Path) -> str:
     """Detect file encoding."""
+    if not HAS_CHARDET:
+        return 'utf-8'
     try:
         with open(file_path, 'rb') as f:
-            raw_data = f.read(10000)  # Read first 10KB for detection
+            raw_data = f.read(10000)
             result = chardet.detect(raw_data)
-            encoding = result.get('encoding', 'utf-8')
-            # Fallback to common encodings if confidence is low
-            if result.get('confidence', 0) < 0.7:
-                try:
-                    raw_data.decode('utf-8')
-                    return 'utf-8'
-                except:
-                    return 'windows-1256'  # Common for Persian/Arabic
-            return encoding
-    except Exception as e:
-        logger.warning(f"Could not detect encoding for {file_path}: {e}")
+            if result.get('confidence', 0) > 0.7:
+                return result.get('encoding', 'utf-8')
+            return 'utf-8'
+    except Exception:
         return 'utf-8'
 
 def clean_inline_tags(text: str) -> str:
@@ -57,43 +69,33 @@ def clean_inline_tags(text: str) -> str:
     if not text:
         return ""
     
-    # Remove timestamp tags
+    # حذف تگ‌های زمان و استایل
     text = re.sub(r'<\d{2}:\d{2}:\d{2}\.\d{3}>', '', text)
+    text = re.sub(r'</?[^>]+>', '', text)
     
-    # Remove styling tags
-    text = re.sub(r'</?[cvbisu]>', '', text, flags=re.IGNORECASE)
-    
-    # Remove WebVTT comment blocks
+    # حذف کامنت‌های WebVTT
     text = re.sub(r'NOTE\s+.*?\n', '', text, flags=re.DOTALL | re.IGNORECASE)
     
-    # Remove extra whitespace
+    # تمیزکاری فاصله‌ها
+    text = text.replace('&nbsp;', ' ')
     text = re.sub(r'\s+', ' ', text)
     
-    # Remove leading/trailing whitespace
-    text = text.strip()
-    
-    # Fix common issues
-    text = re.sub(r'\s*,\s*', ', ', text)  # Fix comma spacing
-    text = re.sub(r'\s*\.\s*', '. ', text)  # Fix period spacing
-    
-    return text
+    return text.strip()
 
 def parse_vtt_blocks(vtt_path: Path) -> List[TranscriptLine]:
-    """
-    Parse VTT file into TranscriptLine objects with improved error handling.
-    """
+    """Parse VTT file into TranscriptLine objects."""
     transcripts = []
-    last_text = ""
     
     try:
         encoding = detect_encoding(vtt_path)
-        content = vtt_path.read_text(encoding=encoding)
+        # استفاده از errors='replace' برای جلوگیری از کرش کردن در کاراکترهای عجیب
+        content = vtt_path.read_text(encoding=encoding, errors='replace')
         
-        # Split into blocks (separated by blank lines)
+        # جدا کردن بلوک‌ها با خط خالی
         blocks = re.split(r'\n\s*\n', content.strip())
         
         for block in blocks:
-            # Skip header blocks
+            # نادیده گرفتن هدرها
             if block.startswith('WEBVTT') or block.startswith('NOTE') or '-->' not in block:
                 continue
             
@@ -101,8 +103,19 @@ def parse_vtt_blocks(vtt_path: Path) -> List[TranscriptLine]:
             if len(lines) < 2:
                 continue
             
-            # Parse timestamp line
-            time_match = re.match(r'(\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3})', lines[0])
+            # پیدا کردن خط زمان
+            time_line_idx = -1
+            for i, line in enumerate(lines):
+                if '-->' in line:
+                    time_line_idx = i
+                    break
+            
+            if time_line_idx == -1:
+                continue
+            
+            # استخراج زمان
+            time_match = re.search(r'(\d{2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})', lines[time_line_idx])
+            
             if not time_match:
                 continue
             
@@ -111,31 +124,14 @@ def parse_vtt_blocks(vtt_path: Path) -> List[TranscriptLine]:
                 end = convert_to_seconds(time_match.group(2))
                 duration = end - start
                 
-                # Skip invalid durations
-                if duration <= 0 or duration > 3600:  # Max 1 hour per subtitle
-                    logger.warning(f"Invalid duration {duration}s in {vtt_path.name}")
-                    continue
-                
-                # Combine text lines
-                raw_text = ' '.join(lines[1:])
+                # ترکیب خطوط متنی (خطوط بعد از زمان)
+                raw_text = ' '.join(lines[time_line_idx+1:])
                 clean_text = clean_inline_tags(raw_text)
                 
-                # Skip empty or duplicate text
-                if not clean_text or clean_text == last_text:
-                    continue
+                if clean_text:
+                    transcripts.append(TranscriptLine(start, duration, clean_text))
                 
-                # Validate text length (YouTube limit is about 42 chars per line)
-                if len(clean_text) > 200:
-                    logger.warning(f"Long subtitle text ({len(clean_text)} chars) in {vtt_path.name}")
-                    # Split long text (basic splitting)
-                    if len(clean_text) > 500:
-                        clean_text = clean_text[:497] + "..."
-                
-                transcripts.append(TranscriptLine(start, duration, clean_text))
-                last_text = clean_text
-                
-            except Exception as e:
-                logger.warning(f"Error parsing block in {vtt_path.name}: {e}")
+            except Exception:
                 continue
         
     except Exception as e:
@@ -151,35 +147,27 @@ def vtt_to_srt_clean(vtt_path: Union[str, Path]) -> Optional[Path]:
     """
     vtt_path = Path(vtt_path)
     if not vtt_path.exists():
-        logger.error(f"VTT file not found: {vtt_path}")
         return None
     
-    # Create SRT filename (replace .vtt with .srt)
     srt_path = vtt_path.with_suffix('.srt')
     
-    # Skip if SRT already exists and is newer
-    if srt_path.exists() and srt_path.stat().st_mtime > vtt_path.stat().st_mtime:
-        logger.info(f"SRT already exists and is newer: {srt_path}")
+    # اگر فایل srt وجود دارد و حجمش منطقی است، دوباره نساز
+    if srt_path.exists() and srt_path.stat().st_size > 10:
         return srt_path
     
     try:
-        logger.info(f"Processing VTT file: {vtt_path.name}")
-        
         transcripts = parse_vtt_blocks(vtt_path)
         
         if not transcripts:
-            logger.warning(f"No valid transcripts found in {vtt_path.name}")
             return None
         
-        # Format as SRT
+        # فرمت دهی به SRT
         formatter = SRTFormatter()
         srt_content = formatter.format_transcript(transcripts)
         
-        # Write SRT file
         with open(srt_path, 'w', encoding='utf-8') as f:
             f.write(srt_content)
         
-        logger.info(f"✅ Converted to SRT: {srt_path.name} ({len(transcripts)} lines)")
         return srt_path
         
     except Exception as e:
@@ -193,69 +181,12 @@ def process_directory(source_directory: Union[str, Path], recursive: bool = True
     source_path = Path(source_directory)
     
     if not source_path.exists():
-        logger.error(f"Directory not found: {source_directory}")
         return
     
-    if not source_path.is_dir():
-        logger.error(f"Path is not a directory: {source_directory}")
-        return
-    
-    logger.info(f"Processing VTT files in: {source_directory}")
-    
-    # Find VTT files
     if recursive:
         vtt_files = list(source_path.rglob('*.vtt'))
     else:
         vtt_files = list(source_path.glob('*.vtt'))
     
-    if not vtt_files:
-        logger.info("No VTT files found.")
-        return
-    
-    logger.info(f"Found {len(vtt_files)} VTT file(s)")
-    
-    successful = 0
-    failed = 0
-    
     for vtt_file in vtt_files:
-        try:
-            result = vtt_to_srt_clean(vtt_file)
-            if result:
-                successful += 1
-            else:
-                failed += 1
-        except Exception as e:
-            logger.error(f"Error processing {vtt_file}: {e}")
-            failed += 1
-    
-    logger.info(f"Conversion complete: {successful} successful, {failed} failed")
-    
-    # Clean up original VTT files if conversion was successful
-    if successful > 0 and failed == 0:
-        logger.info("Cleaning up original VTT files...")
-        for vtt_file in vtt_files:
-            try:
-                srt_file = vtt_file.with_suffix('.srt')
-                if srt_file.exists():
-                    vtt_file.unlink()
-                    logger.debug(f"Removed: {vtt_file.name}")
-            except Exception as e:
-                logger.warning(f"Could not remove {vtt_file}: {e}")
-
-def batch_convert(vtt_files: List[Union[str, Path]], output_dir: Optional[Path] = None):
-    """
-    Batch convert multiple VTT files.
-    """
-    results = {'success': [], 'failed': []}
-    
-    for vtt_file in vtt_files:
-        try:
-            result = vtt_to_srt_clean(vtt_file)
-            if result:
-                results['success'].append(str(result))
-            else:
-                results['failed'].append(str(vtt_file))
-        except Exception as e:
-            results['failed'].append(f"{vtt_file}: {e}")
-    
-    return results
+        vtt_to_srt_clean(vtt_file)
