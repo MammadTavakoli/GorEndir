@@ -3,7 +3,7 @@ import re
 import pysrt
 from tqdm import tqdm
 from pathlib import Path
-from typing import List, Optional, Generator
+from typing import List, Dict, Optional, Union, Tuple
 import unicodedata
 import hashlib
 
@@ -77,10 +77,60 @@ def sanitize_filename(filename: str, max_length: int = 200) -> str:
     
     return filename
 
+def clean_subtitle_text(text: str) -> str:
+    """Clean subtitle text from formatting."""
+    # Remove HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    # Remove speaker labels (e.g., "JOHN: Hello")
+    text = re.sub(r'^[A-Z][A-Z\s]*:\s*', '', text)
+    
+    # Normalize whitespace
+    text = re.sub(r'\s+', ' ', text)
+    
+    # Remove music symbols
+    text = re.sub(r'♪[^♪]*♪', '', text)
+    
+    return text.strip()
+
+def enhance_text_formatting(text: str, append_text: str) -> str:
+    """Enhance text formatting for better readability."""
+    # Replace append_text with appropriate punctuation
+    text = text.replace('.' + append_text, '.\n\n')
+    text = text.replace('?' + append_text, '?\n\n')
+    text = text.replace('!' + append_text, '!\n\n')
+    
+    # Handle remaining append_text
+    text = text.replace(append_text, '\n')
+    
+    # Fix multiple newlines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    # Capitalize sentences
+    sentences = re.split(r'([.!?]\s+)', text)
+    enhanced = []
+    
+    for i in range(0, len(sentences), 2):
+        if i < len(sentences):
+            sentence = sentences[i]
+            if i+1 < len(sentences):
+                punctuation = sentences[i+1]
+            else:
+                punctuation = ''
+            
+            if sentence.strip():
+                # Capitalize first letter
+                sentence = sentence.strip()
+                if sentence:
+                    sentence = sentence[0].upper() + sentence[1:]
+                enhanced.append(sentence + punctuation)
+    
+    return ''.join(enhanced)
+
 def convert_srt_to_text(
     srt_file_path: Union[str, Path],
     append_text: str = '*******',
-    output_file: Optional[str] = None,
+    output_file: Optional[Union[str, Path]] = None,
     clean_text: bool = True
 ) -> Optional[str]:
     """
@@ -152,7 +202,7 @@ def convert_srt_to_text(
         print(f"❌ Encoding error in {os.path.basename(srt_file_path)}")
         # Try different encodings
         try:
-            return convert_srt_to_text_with_encoding(srt_file_path, append_text, output_file)
+            return convert_srt_to_text_with_encoding(srt_file_path, append_text, output_file, clean_text)
         except:
             return None
     except Exception as e:
@@ -161,9 +211,10 @@ def convert_srt_to_text(
     return None
 
 def convert_srt_to_text_with_encoding(
-    srt_file_path: str,
+    srt_file_path: Union[str, Path],
     append_text: str,
-    output_file: Optional[str]
+    output_file: Optional[Union[str, Path]],
+    clean_text: bool
 ) -> Optional[str]:
     """Try to convert SRT with different encodings."""
     encodings = ['utf-8-sig', 'latin-1', 'windows-1256', 'cp1252']
@@ -178,62 +229,12 @@ def convert_srt_to_text_with_encoding(
                 f.write(content)
             
             # Retry conversion
-            return convert_srt_to_text(srt_file_path, append_text, output_file)
+            return convert_srt_to_text(srt_file_path, append_text, output_file, clean_text)
             
         except:
             continue
     
     return None
-
-def clean_subtitle_text(text: str) -> str:
-    """Clean subtitle text from formatting."""
-    # Remove HTML tags
-    text = re.sub(r'<[^>]+>', '', text)
-    
-    # Remove speaker labels (e.g., "JOHN: Hello")
-    text = re.sub(r'^[A-Z][A-Z\s]*:\s*', '', text)
-    
-    # Normalize whitespace
-    text = re.sub(r'\s+', ' ', text)
-    
-    # Remove music symbols
-    text = re.sub(r'♪[^♪]*♪', '', text)
-    
-    return text.strip()
-
-def enhance_text_formatting(text: str, append_text: str) -> str:
-    """Enhance text formatting for better readability."""
-    # Replace append_text with appropriate punctuation
-    text = text.replace('.' + append_text, '.\n\n')
-    text = text.replace('?' + append_text, '?\n\n')
-    text = text.replace('!' + append_text, '!\n\n')
-    
-    # Handle remaining append_text
-    text = text.replace(append_text, '\n')
-    
-    # Fix multiple newlines
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    
-    # Capitalize sentences
-    sentences = re.split(r'([.!?]\s+)', text)
-    enhanced = []
-    
-    for i in range(0, len(sentences), 2):
-        if i < len(sentences):
-            sentence = sentences[i]
-            if i+1 < len(sentences):
-                punctuation = sentences[i+1]
-            else:
-                punctuation = ''
-            
-            if sentence.strip():
-                # Capitalize first letter
-                sentence = sentence.strip()
-                if sentence:
-                    sentence = sentence[0].upper() + sentence[1:]
-                enhanced.append(sentence + punctuation)
-    
-    return ''.join(enhanced)
 
 def convert_all_srt_to_text(
     folder_path: Union[str, Path],
@@ -269,7 +270,7 @@ def convert_all_srt_to_text(
     # Process files
     for srt_file in tqdm(srt_files, desc="Converting SRT files", unit="file"):
         try:
-            result = convert_srt_to_text(srt_file, append_text, clean_text=clean_text)
+            result = convert_srt_to_text(srt_file, append_text, None, clean_text)
             if result:
                 results['success'].append(str(srt_file))
             else:
