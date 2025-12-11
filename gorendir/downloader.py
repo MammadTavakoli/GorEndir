@@ -150,7 +150,7 @@ class YouTubeDownloader:
         uploader = info.get("uploader", "Unknown_Uploader")[:50]
         video_id = info.get("id", "")[:20]
         
-        folder_name = sanitize_filename(f"{video_id}_{title}_{uploader}")
+        folder_name = sanitize_filename(f"{title}_{uploader}")
         folder = self.save_directory / "Download_video" / folder_name
         folder.mkdir(parents=True, exist_ok=True)
         

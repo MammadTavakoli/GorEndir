@@ -1,192 +1,147 @@
 import re
-import logging
 from pathlib import Path
-# خط زیر بسیار مهم است و باعث رفع خطای شما می‌شود
-from typing import List, Optional, Union 
 from youtube_transcript_api.formatters import SRTFormatter
+import logging
 
-# سعی در ایمپورت chardet، اگر نبود utf-8 پیش‌فرض است
-try:
-    import chardet
-    HAS_CHARDET = True
-except ImportError:
-    HAS_CHARDET = False
-
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class TranscriptLine:
-    """Represents a single subtitle line."""
-    def __init__(self, start: float, duration: float, text: str):
+    def __init__(self, start, duration, text):
         self.start = start
         self.duration = duration
         self.text = text
-        
-    def __repr__(self):
-        return f"TranscriptLine(start={self.start}, duration={self.duration}, text='{self.text[:50]}...')"
 
-def convert_to_seconds(time_str: str) -> float:
-    """Convert VTT time format to seconds."""
-    try:
-        # مدیریت فرمت‌های مختلف زمان (با یا بدون میلی‌ثانیه)
-        if '.' in time_str:
-            main, ms = time_str.split('.')
-            ms = int(ms[:3].ljust(3, '0'))
-        elif ',' in time_str: # گاهی اوقات فرمت srt ممکن است قاطی شود
-            main, ms = time_str.split(',')
-            ms = int(ms[:3].ljust(3, '0'))
-        else:
-            main, ms = time_str, 0
-            
-        parts = main.split(':')
-        if len(parts) == 3: # HH:MM:SS
-            h, m, s = parts
-        elif len(parts) == 2: # MM:SS
-            h, m, s = 0, parts[0], parts[1]
-        else:
-            return 0.0
-        
-        return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
-    except Exception as e:
-        # logger.warning(f"Error converting time '{time_str}': {e}")
-        return 0.0
+def convert_to_seconds(time_str):
+    h, m, s = time_str.split(":")
+    s, ms = s.split(".")
+    return int(h)*3600 + int(m)*60 + int(s) + int(ms)/1000.0
 
-def detect_encoding(file_path: Path) -> str:
-    """Detect file encoding."""
-    if not HAS_CHARDET:
-        return 'utf-8'
-    try:
-        with open(file_path, 'rb') as f:
-            raw_data = f.read(10000)
-            result = chardet.detect(raw_data)
-            if result.get('confidence', 0) > 0.7:
-                return result.get('encoding', 'utf-8')
-            return 'utf-8'
-    except Exception:
-        return 'utf-8'
-
-def clean_inline_tags(text: str) -> str:
-    """Clean VTT inline tags and formatting."""
-    if not text:
-        return ""
-    
-    # حذف تگ‌های زمان و استایل
+def clean_inline_tags(text):
     text = re.sub(r'<\d{2}:\d{2}:\d{2}\.\d{3}>', '', text)
-    text = re.sub(r'</?[^>]+>', '', text)
-    
-    # حذف کامنت‌های WebVTT
-    text = re.sub(r'NOTE\s+.*?\n', '', text, flags=re.DOTALL | re.IGNORECASE)
-    
-    # تمیزکاری فاصله‌ها
-    text = text.replace('&nbsp;', ' ')
-    text = re.sub(r'\s+', ' ', text)
-    
+    text = re.sub(r'</?c>', '', text)
     return text.strip()
 
-def parse_vtt_blocks(vtt_path: Path) -> List[TranscriptLine]:
-    """Parse VTT file into TranscriptLine objects."""
-    transcripts = []
-    
-    try:
-        encoding = detect_encoding(vtt_path)
-        # استفاده از errors='replace' برای جلوگیری از کرش کردن در کاراکترهای عجیب
-        content = vtt_path.read_text(encoding=encoding, errors='replace')
-        
-        # جدا کردن بلوک‌ها با خط خالی
-        blocks = re.split(r'\n\s*\n', content.strip())
-        
-        for block in blocks:
-            # نادیده گرفتن هدرها
-            if block.startswith('WEBVTT') or block.startswith('NOTE') or '-->' not in block:
-                continue
-            
-            lines = block.strip().split('\n')
-            if len(lines) < 2:
-                continue
-            
-            # پیدا کردن خط زمان
-            time_line_idx = -1
-            for i, line in enumerate(lines):
-                if '-->' in line:
-                    time_line_idx = i
-                    break
-            
-            if time_line_idx == -1:
-                continue
-            
-            # استخراج زمان
-            time_match = re.search(r'(\d{2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})', lines[time_line_idx])
-            
-            if not time_match:
-                continue
-            
-            try:
-                start = convert_to_seconds(time_match.group(1))
-                end = convert_to_seconds(time_match.group(2))
-                duration = end - start
-                
-                # ترکیب خطوط متنی (خطوط بعد از زمان)
-                raw_text = ' '.join(lines[time_line_idx+1:])
-                clean_text = clean_inline_tags(raw_text)
-                
-                if clean_text:
-                    transcripts.append(TranscriptLine(start, duration, clean_text))
-                
-            except Exception:
-                continue
-        
-    except Exception as e:
-        logger.error(f"Failed to parse VTT file {vtt_path}: {e}")
-        return []
-    
-    return transcripts
+def parse_vtt_blocks(vtt_path):
+    """
+    خواندن فایل vtt و تقسیم به بلوک‌هایی که هر بلوک مجموعه خطوط پشت سر هم بدون خط خالی است
+    حذف بلوک‌هایی که حتی یک خطشان شامل <c> است.
+    بازگرداندن لیستی از خطوط تمیز (TranscriptLine)
+    """
+    with open(vtt_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
 
-def vtt_to_srt_clean(vtt_path: Union[str, Path]) -> Optional[Path]:
-    """
-    Convert VTT file to clean SRT format.
-    Returns path to SRT file if successful.
-    """
+    # حذف هدرهای اولیه (WEBVTT و ...)
+    content_lines = []
+    header_done = False
+    for line in lines:
+        if header_done:
+            content_lines.append(line.rstrip('\n'))
+        else:
+            if line.strip() == '':
+                header_done = True
+
+    # گروه‌بندی خطوط به بلوک‌های پاراگرافی (جداشده با خط خالی)
+    blocks = []
+    current_block = []
+    for line in content_lines:
+        if line.strip() == '':
+            if current_block:
+                blocks.append(current_block)
+                current_block = []
+        else:
+            current_block.append(line)
+    if current_block:
+        blocks.append(current_block)
+
+    # حذف بلوک‌هایی که حداقل یک خطشان شامل <c> است
+    filtered_blocks = []
+    for block in blocks:
+        if any('<c>' in l for l in block):
+            # رد کردن کل بلوک
+            continue
+        filtered_blocks.append(block)
+
+    # حالا هر بلوک را به SubtitleLines تبدیل می‌کنیم
+    transcript = []
+    last_text = ""
+
+    for block in filtered_blocks:
+        if len(block) < 2:
+            continue
+        # خط اول باید timestamp باشد
+        time_match = re.match(r'(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})', block[0])
+        if not time_match:
+            continue
+
+        start = convert_to_seconds(time_match.group(1))
+        end = convert_to_seconds(time_match.group(2))
+        duration = end - start
+
+        raw_text = " ".join(block[1:])
+        clean_text = clean_inline_tags(raw_text)
+
+        # حذف خطوط تکراری یا خالی
+        if clean_text == last_text or not clean_text.strip():
+            continue
+
+        transcript.append(TranscriptLine(start, duration, clean_text))
+        last_text = clean_text
+
+    return transcript
+
+def vtt_to_srt_clean(vtt_path):
     vtt_path = Path(vtt_path)
-    if not vtt_path.exists():
-        return None
-    
-    srt_path = vtt_path.with_suffix('.srt')
-    
-    # اگر فایل srt وجود دارد و حجمش منطقی است، دوباره نساز
-    if srt_path.exists() and srt_path.stat().st_size > 10:
-        return srt_path
-    
-    try:
-        transcripts = parse_vtt_blocks(vtt_path)
-        
-        if not transcripts:
-            return None
-        
-        # فرمت دهی به SRT
-        formatter = SRTFormatter()
-        srt_content = formatter.format_transcript(transcripts)
-        
-        with open(srt_path, 'w', encoding='utf-8') as f:
-            f.write(srt_content)
-        
-        return srt_path
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to convert {vtt_path.name}: {e}")
-        return None
+    srt_path = vtt_path.with_suffix("._.srt")
 
-def process_directory(source_directory: Union[str, Path], recursive: bool = True):
+    logger.info(f"Parsing and cleaning VTT file: {vtt_path}")
+    transcript = parse_vtt_blocks(vtt_path)
+
+    formatter = SRTFormatter()
+    srt_content = formatter.format_transcript(transcript)
+
+    with open(srt_path, "w", encoding="utf-8") as f:
+        f.write(srt_content)
+
+    logger.info(f"✅ Cleaned SRT saved to: {srt_path}")
+
+def process_directory(source_directory):
     """
-    Convert all VTT files in directory to SRT format.
+    Finds all .vtt files in a directory and its subdirectories and converts them to SRT.
     """
     source_path = Path(source_directory)
-    
-    if not source_path.exists():
+    if not source_path.is_dir():
+        logger.error(f"Path '{source_directory}' is not a valid directory.")
         return
+
+    logger.info(f"Starting recursive processing of VTT files in directory: {source_directory}")
     
-    if recursive:
-        vtt_files = list(source_path.rglob('*.vtt'))
-    else:
-        vtt_files = list(source_path.glob('*.vtt'))
+    found_files = 0
+    processed_files = 0
+
+    # rglob searches recursively in the source directory and all its subdirectories.
+    for vtt_file in source_path.rglob('*.vtt'):
+        found_files += 1
+        logger.info(f"Found VTT file: {vtt_file}")
+        try:
+            vtt_to_srt_clean(vtt_file)
+            processed_files += 1
+        except Exception as e:
+            logger.error(f"Error processing file '{vtt_file}': {e}")
+
+# # ---------- نقطه ورودی برنامه ----------
+# if __name__ == "__main__":
+#     # از کاربر بخواهید مسیر پوشه مبدا را وارد کند
+#     # یا می‌توانید یک مسیر پیش‌فرض را اینجا تنظیم کنید.
+#     # source_folder = input("لطفاً مسیر پوشه مبدا را وارد کنید (مثال: C:\\Users\\YourUser\\Videos): ")
     
-    for vtt_file in vtt_files:
-        vtt_to_srt_clean(vtt_file)
+#     # مثال: استفاده از پوشه جاری به عنوان پوشه مبدا
+#     source_folder = os.getcwd() 
+#     # اگر می‌خواهید یک مسیر خاص را تست کنید، خط بالا را کامنت کرده و خط زیر را فعال کنید:
+#     # source_folder = r'C:\Users\YourUser\Videos\MyTranscripts' 
+
+#     if source_folder:
+#         process_directory(source_folder)
+#     else:
+#         logger.warning("مسیر پوشه مبدا وارد نشد. برنامه متوقف شد.")
+
