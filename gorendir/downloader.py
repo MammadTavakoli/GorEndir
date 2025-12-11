@@ -1,53 +1,60 @@
-import re
 import os
 import time
-import random
-import copy
-import logging
 import json
+import random
+import logging
+import http.cookiejar
+import requests
+import re
 from pathlib import Path
-from typing import List, Dict, Optional, Union, Tuple
+from typing import List, Dict, Optional, Union
 from urllib.parse import urlparse, parse_qs
 
 # Third-party imports
 import yt_dlp
-try:
-    from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
-    from youtube_transcript_api.formatters import SRTFormatter
-except ImportError:
-    YouTubeTranscriptApi = None
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+# اضافه شدن TextFormatter به ایمپورت‌ها
+from youtube_transcript_api.formatters import SRTFormatter, TextFormatter
 
-# Local imports
+# Local imports (Fallback handling)
 try:
     from .utils import sanitize_filename, convert_all_srt_to_text, rename_files_in_folder
     from .vtt_to_srt import process_directory
 except ImportError:
-    from utils import sanitize_filename, convert_all_srt_to_text, rename_files_in_folder
-    from vtt_to_srt import process_directory
+    # Minimal utility implementation
+    def sanitize_filename(name):
+        return "".join([c for c in name if c.isalpha() or c.isdigit() or c in " ._-"]).strip()
+    def process_directory(path): pass
+    def convert_all_srt_to_text(path, sep): pass
+    def rename_files_in_folder(path): pass
 
+# Constants
 DEFAULT_SUBTITLE_LANGUAGES = ["az", "en", "fa", "tr"]
 DEFAULT_MAX_RESOLUTION = 1080
+LOG_FILE = "gorendir.log"
 
 def setup_logger():
-    """تنظیمات پیشرفته لاگینگ"""
+    """Configures a professional logger."""
     logger = logging.getLogger("gorendir")
     if logger.hasHandlers():
         logger.handlers.clear()
         
     logger.setLevel(logging.INFO)
-    log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
     
-    console = logging.StreamHandler()
-    console.setFormatter(log_formatter)
-    logger.addHandler(console)
+    # Console Handler
+    ch = logging.StreamHandler()
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
     
+    # File Handler
     try:
-        log_file = Path("gorendir.log")
-        file_handler = logging.FileHandler(log_file, encoding='utf-8', mode='a')
-        file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s"))
-        logger.addHandler(file_handler)
+        fh = logging.FileHandler(LOG_FILE, encoding='utf-8', mode='a')
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s"))
+        logger.addHandler(fh)
     except Exception:
         pass
+        
     return logger
 
 logger = setup_logger()
@@ -56,7 +63,10 @@ class DownloadError(Exception):
     pass
 
 class YouTubeDownloader:
-    """کلاس حرفه‌ای برای دانلود ویدیو و زیرنویس از یوتوب."""
+    """
+    A professional downloader class integrating yt-dlp for video and 
+    youtube_transcript_api for robust subtitle handling with cookie support.
+    """
     
     def __init__(
         self,
@@ -71,16 +81,36 @@ class YouTubeDownloader:
         self.save_directory.mkdir(parents=True, exist_ok=True)
         self.subtitle_languages = subtitle_languages or DEFAULT_SUBTITLE_LANGUAGES
         self.max_resolution = max_resolution
-        # حذف MAX_WORKERS: برای جلوگیری از 429 همیشه سریال دانلود می‌کنیم
         self.retry_attempts = retry_attempts
         self.timeout = timeout
         self.cookies_path = cookies_path
         self.downloaded_urls = self._load_downloaded_urls()
         
-        # بررسی نسخه کتابخانه
-        if YouTubeTranscriptApi and not hasattr(YouTubeTranscriptApi, 'list_transcripts'):
-            logger.critical("Your 'youtube-transcript-api' library is too old. Please run: pip install --upgrade youtube-transcript-api")
-        
+        # Initialize API Session with Cookies if provided
+        self.api_session = self._setup_api_session()
+        # Create API instance with the session
+        self.ytt_api = YouTubeTranscriptApi(http_client=self.api_session)
+
+    def _setup_api_session(self) -> requests.Session:
+        """
+        Loads cookies from a Netscape format file (cookies.txt) into a requests.Session.
+        """
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+
+        if self.cookies_path and os.path.exists(self.cookies_path):
+            try:
+                cookie_jar = http.cookiejar.MozillaCookieJar(self.cookies_path)
+                cookie_jar.load(ignore_discard=True, ignore_expires=True)
+                session.cookies = cookie_jar
+                logger.info(f"Loaded cookies from {self.cookies_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load cookies for API session: {e}")
+        return session
+
     def _load_downloaded_urls(self) -> set:
         log_file = self.save_directory / "_urls.txt"
         if log_file.exists():
@@ -89,16 +119,15 @@ class YouTubeDownloader:
             except Exception:
                 return set()
         return set()
-    
+
     def _save_url_to_log(self, url: str):
-        log_file = self.save_directory / "_urls.txt"
         try:
-            with open(log_file, 'a', encoding='utf-8') as f:
+            with open(self.save_directory / "_urls.txt", 'a', encoding='utf-8') as f:
                 f.write(url + "\n")
             self.downloaded_urls.add(url)
-        except Exception as e:
-            logger.error(f"Failed to save URL to log: {e}")
-    
+        except Exception:
+            pass
+
     def _extract_video_id(self, url: str) -> Optional[str]:
         patterns = [
             r'(?:youtube\.com\/watch\?v=)([^&#]+)',
@@ -108,96 +137,31 @@ class YouTubeDownloader:
         ]
         for pattern in patterns:
             match = re.search(pattern, url)
-            if match:
-                return match.group(1)
-        
+            if match: return match.group(1)
+            
         parsed = urlparse(url)
         if parsed.netloc in ['youtube.com', 'www.youtube.com']:
             query = parse_qs(parsed.query)
-            if 'v' in query:
-                return query['v'][0]
+            if 'v' in query: return query['v'][0]
         return None
-    
-    def _get_video_info_with_retry(self, url: str) -> dict:
-        for attempt in range(self.retry_attempts):
-            try:
-                ydl_opts = {
-                    'ignoreerrors': True,
-                    'quiet': True,
-                    'no_warnings': True,
-                    'socket_timeout': self.timeout,
-                    'extract_flat': True,
-                    'cookiefile': self.cookies_path
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                
-                if not info:
-                    raise DownloadError(f"Could not extract info from: {url}")
-                
-                if info.get("live_status") == "is_upcoming":
-                    raise DownloadError(f"Video is upcoming/live: {url}")
-                
-                return info
-            except Exception as e:
-                if attempt == self.retry_attempts - 1:
-                    raise DownloadError(f"Failed after {self.retry_attempts} attempts: {e}")
-                time.sleep(2 + attempt) # افزایش تاخیر در صورت خطا
-    
-    def _create_folder(self, info: dict, url: str, force: bool) -> Path:
+
+    def _create_folder_structure(self, info: dict, url: str, force: bool) -> Path:
         if not force and url in self.downloaded_urls:
             raise DownloadError(f"URL already downloaded: {url}")
-        
-        title = info.get("title", "Unknown_Title")[:100]
-        uploader = info.get("uploader", "Unknown_Uploader")[:50]
-        
+            
+        title = info.get("title", "Unknown")[:100]
+        uploader = info.get("uploader", "Unknown")[:50]
         folder_name = sanitize_filename(f"{title}_{uploader}")
         folder = self.save_directory / "Download_video" / folder_name
         folder.mkdir(parents=True, exist_ok=True)
         
         try:
-            (folder / "metadata.json").write_text(
-                json.dumps(info, indent=2, ensure_ascii=False), encoding='utf-8'
-            )
+            (folder / "metadata.json").write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding='utf-8')
             (folder / "_url.txt").write_text(url, encoding="utf-8")
-        except Exception:
-            pass
-            
+        except Exception: pass
+        
         self._save_url_to_log(url)
         return folder
-    
-    def _get_ydl_options(self, start: int, reverse: bool, write_subs: bool, folder: Path = None) -> dict:
-        opts = {
-            'format': f'bestvideo[height<={self.max_resolution}][ext=mp4]+bestaudio[ext=m4a]/best[height<={self.max_resolution}]/best',
-            'paths': {'home': str(folder)} if folder else {},
-            'outtmpl': '%(autonumber)02d_%(title)s.%(ext)s',
-            'writedescription': True,
-            'writeinfojson': True,
-            'writethumbnail': True,
-            'autonumber_start': start,
-            'playliststart': start,
-            'ignoreerrors': True,
-            'no_overwrites': True,
-            'continue_dl': True,
-            
-            'writesubtitles': write_subs,
-            'writeautomaticsub': True,
-            'subtitleslangs': self.subtitle_languages, 
-            'subtitlesformat': 'srt', 
-            
-            'socket_timeout': self.timeout,
-            'retries': 10,
-            'no_check_certificate': True,
-            'prefer_free_formats': True,
-            'cookiefile': self.cookies_path,
-            # کاهش سرعت دانلود برای جلوگیری از بلاک شدن در صورت نیاز
-            # 'ratelimit': 5000000, 
-        }
-        
-        if reverse:
-            opts['playlistreverse'] = True
-            
-        return opts
 
     def download_video(
         self,
@@ -208,221 +172,208 @@ class YouTubeDownloader:
         reverse_download: bool = False,
         yt_dlp_write_subs: bool = True,
         download_subtitles: bool = True
-    ) -> Dict[str, any]:
-        
+    ):
         results = {'success': [], 'failed': [], 'skipped': []}
-        tasks = self._parse_url_input(video_urls, playlist_start)
+        tasks = self._parse_tasks(video_urls, playlist_start)
         
-        if not tasks:
-            logger.warning("No valid URLs provided")
-            return results
+        logger.info(f"Starting batch process for {len(tasks)} tasks...")
         
-        logger.info(f"Starting batch download of {len(tasks)} items...")
-        
-        for url, start in tasks:
+        for url, start_idx in tasks:
             try:
-                # تاخیر تصادفی بین ویدیوها برای جلوگیری از 429
-                if len(results['success']) > 0 or len(results['failed']) > 0:
-                    sleep_time = random.uniform(3, 7)
-                    logger.info(f"Sleeping for {sleep_time:.1f}s to avoid rate limits...")
-                    time.sleep(sleep_time)
+                # Anti-ban sleep
+                if results['success']: 
+                    time.sleep(random.uniform(3, 6))
 
-                result = self._process_single_url(
-                    url, start, skip_download, force_download,
+                result = self._process_single_task(
+                    url, start_idx, skip_download, force_download, 
                     reverse_download, yt_dlp_write_subs, download_subtitles
                 )
                 
-                if result.get('skipped'):
-                    results['skipped'].append(url)
-                elif result.get('success'):
-                    results['success'].append(url)
-                else:
-                    results['failed'].append({'url': url, 'error': result.get('error')})
-                    
+                if result.get('skipped'): results['skipped'].append(url)
+                elif result.get('success'): results['success'].append(url)
+                else: results['failed'].append({'url': url, 'error': result.get('error')})
+                
             except Exception as e:
-                logger.error(f"Critical error processing {url}: {e}")
+                logger.error(f"Critical error on {url}: {e}")
                 results['failed'].append({'url': url, 'error': str(e)})
-        
+
+        # Post-processing (still useful for yt-dlp subs if any)
         if not skip_download:
             try:
-                logger.info("Running post-processing...")
                 process_directory(self.save_directory)
-                convert_all_srt_to_text(self.save_directory, '*******')
+                # Note: API subs already created text files, this utility is for others
+                convert_all_srt_to_text(self.save_directory)
             except Exception as e:
-                logger.error(f"Post-processing failed: {e}")
-        
+                logger.warning(f"Post-processing warning: {e}")
+
         self._print_summary(results)
         return results
-    
-    def _parse_url_input(self, video_urls, playlist_start):
+
+    def _parse_tasks(self, video_urls, default_start):
         tasks = []
-        if isinstance(video_urls, dict):
-            for url, start in video_urls.items():
-                tasks.append((url, start))
-        elif isinstance(video_urls, str):
-            tasks.append((video_urls, playlist_start))
+        if isinstance(video_urls, str): tasks.append((video_urls, default_start))
         elif isinstance(video_urls, list):
             for item in video_urls:
                 if isinstance(item, dict):
-                    for url, start in item.items():
-                        tasks.append((url, start))
-                else:
-                    tasks.append((item, playlist_start))
+                    for u, s in item.items(): tasks.append((u, s))
+                else: tasks.append((item, default_start))
         return tasks
-    
-    def _process_single_url(self, url, start, skip_download, force_download, reverse, write_subs, download_subs_api):
-        vid_id = self._extract_video_id(url)
-        if not vid_id and "list=" not in url:
-             return {'error': 'Invalid YouTube URL', 'success': False}
 
-        canonical = url if "list=" in url else f"https://www.youtube.com/watch?v={vid_id}"
-        
+    def _process_single_task(self, url, start, skip, force, reverse, write_subs, dl_subs):
+        vid_id = self._extract_video_id(url)
+        if "list=" in url:
+            canonical = url
+        elif vid_id:
+            canonical = f"https://www.youtube.com/watch?v={vid_id}"
+        else:
+            return {'error': 'Invalid URL', 'success': False}
+            
         logger.info(f"Processing: {canonical}")
         
         try:
-            info = self._get_video_info_with_retry(canonical)
-            folder = self._create_folder(info, canonical, force_download)
+            info = self._fetch_info(canonical)
+            folder = self._create_folder_structure(info, canonical, force)
             
-            opts = self._get_ydl_options(start, reverse, write_subs, folder=folder)
+            ydl_opts = {
+                'format': f'bestvideo[height<={self.max_resolution}][ext=mp4]+bestaudio[ext=m4a]/best',
+                'paths': {'home': str(folder)},
+                'outtmpl': '%(autonumber)02d_%(title)s.%(ext)s',
+                'autonumber_start': start,
+                'playliststart': start,
+                'playlistreverse': reverse,
+                'ignoreerrors': True,
+                'no_overwrites': True,
+                'continue_dl': True,
+                'quiet': True,
+                'no_warnings': True,
+                'cookiefile': self.cookies_path,
+                'writesubtitles': write_subs,
+                'writeautomaticsub': True,
+                'subtitleslangs': self.subtitle_languages,
+            }
             
-            if skip_download:
-                opts['simulate'] = True
-                opts['skip_download'] = True
+            if skip:
+                ydl_opts.update({'simulate': True, 'skip_download': True})
             
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                try: ydl.cache.remove()
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                try: ydl.cache.remove() 
                 except: pass
-                playlist_info = ydl.extract_info(canonical, download=not skip_download) or {}
+                playlist_info = ydl.extract_info(canonical, download=not skip) or {}
             
-            if download_subs_api:
+            if dl_subs:
                 entries = playlist_info.get("entries")
-                if not entries:
-                    entries = [playlist_info]
+                if not entries: entries = [playlist_info]
                 
-                videos = self._process_playlist_entries(entries)
-                self.download_subtitles(videos, folder, reverse, start)
-            
+                videos = [{'id': e.get('id'), 'title': e.get('title', 'Unknown')} for e in entries if e]
+                self._download_subtitles_api(videos, folder, reverse, start)
+                
             return {'success': True, 'folder': str(folder)}
             
         except DownloadError as e:
-            if "already downloaded" in str(e):
-                return {'skipped': True, 'message': str(e)}
+            if "already downloaded" in str(e): return {'skipped': True, 'message': str(e)}
             raise
         except Exception as e:
             return {'error': str(e), 'success': False}
-    
-    def _process_playlist_entries(self, entries):
-        results = []
-        for e in entries or []:
-            if not e: continue
-            results.append({
-                'id': e.get("id"),
-                'title': e.get("title", ""),
-                'original_title': e.get("title", "")
-            })
-        return results
 
-    def download_subtitles(self, video_info_list: List[Dict], folder: Path, reverse_download: bool, start_index: int):
-        if not video_info_list: return
-        if not YouTubeTranscriptApi:
-             logger.error("youtube_transcript_api not installed. Cannot download extra subtitles.")
-             return
+    def _fetch_info(self, url):
+        for attempt in range(self.retry_attempts):
+            try:
+                opts = {'extract_flat': True, 'quiet': True, 'cookiefile': self.cookies_path}
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                if not info: raise DownloadError("No info extracted")
+                if info.get("live_status") == "is_upcoming": raise DownloadError("Video is upcoming")
+                return info
+            except Exception as e:
+                if attempt == self.retry_attempts - 1: raise e
+                time.sleep(2 + attempt)
 
-        if reverse_download:
-            video_info_list = list(reversed(video_info_list))
-        
-        # استفاده از حلقه ساده به جای ThreadPoolExecutor برای جلوگیری از 429
-        for idx, video_info in enumerate(video_info_list):
-            current_number = start_index + idx
+    def _download_subtitles_api(self, videos: List[Dict], folder: Path, reverse: bool, start_index: int):
+        if reverse:
+            videos = list(reversed(videos))
             
-            # تاخیر بین درخواست‌های زیرنویس
-            if idx > 0:
-                time.sleep(random.uniform(2, 5))
-                
-            self._download_single_subtitle(video_info, current_number, folder)
-
-    def _download_single_subtitle(self, video_info, number, folder):
-        video_id = video_info.get('id')
-        title = video_info.get('title', 'Unknown')
-        if not video_id: return
-        
-        base_filename = sanitize_filename(f"{number:02d}_{title}")
-        
-        try:
-            transcript_list = YouTubeTranscriptApi.list(video_id, cookies=self.cookies_path)
+        for idx, video in enumerate(videos):
+            vid_id = video.get('id')
+            title = video.get('title')
+            if not vid_id: continue
             
-            needed_langs = set(self.subtitle_languages)
+            current_num = start_index + idx
+            base_filename = sanitize_filename(f"{current_num:02d}_{title}")
             
-            # --- گام ۱: دانلود مستقیم ---
-            for transcript in transcript_list:
-                lang_code = transcript.language_code
-                is_match = False
-                matched_req_lang = None
-                
-                for req_lang in needed_langs:
-                    if lang_code == req_lang or lang_code.startswith(req_lang + '-'):
-                        is_match = True
-                        matched_req_lang = req_lang
-                        break
-                
-                if is_match and matched_req_lang:
-                    self._save_transcript(transcript, folder, base_filename, matched_req_lang)
-                    if matched_req_lang in needed_langs:
-                        needed_langs.remove(matched_req_lang)
+            if idx > 0: time.sleep(random.uniform(2, 4))
+            
+            try:
+                # 1. List transcripts
+                transcript_list = self.ytt_api.list(vid_id)
+                processed_langs = set()
 
-            # --- گام ۲: ترجمه ---
-            if needed_langs:
-                source_transcript = None
-                # تلاش برای پیدا کردن سورس مناسب
-                try: source_transcript = transcript_list.find_manually_created_transcript(['en', 'en-US'])
-                except: pass
-                
-                if not source_transcript:
-                    try: source_transcript = transcript_list.find_generated_transcript(['en', 'en-US'])
-                    except: pass
-                
-                if not source_transcript:
-                    try: source_transcript = next(iter(transcript_list))
-                    except: pass
-                
-                if source_transcript:
-                    for req_lang in list(needed_langs):
+                # 2. Iterate requested languages
+                for req_lang in self.subtitle_languages:
+                    # Strategy A: Direct Fetch
+                    try:
+                        transcript = transcript_list.find_transcript([req_lang])
+                        self._save_transcript(transcript, folder, base_filename, req_lang)
+                        processed_langs.add(req_lang)
+                        continue
+                    except (NoTranscriptFound, ValueError):
+                        pass
+
+                    # Strategy B: Translate
+                    try:
                         try:
-                            if source_transcript.is_translatable:
-                                logger.info(f"Translating to {req_lang}...")
-                                translated_transcript = source_transcript.translate(req_lang)
-                                self._save_transcript(translated_transcript, folder, base_filename, req_lang)
-                                time.sleep(1) # تاخیر کوچک برای هر ترجمه
-                        except Exception as e:
-                            logger.warning(f"Translation failed for {req_lang}: {e}")
+                            source = transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
+                        except:
+                            try:
+                                source = transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
+                            except:
+                                source = next(iter(transcript_list))
+                        
+                        if source and source.is_translatable:
+                            logger.info(f"Translating {source.language_code} -> {req_lang} for '{title}'")
+                            translated_transcript = source.translate(req_lang)
+                            self._save_transcript(translated_transcript, folder, base_filename, req_lang)
+                            processed_langs.add(req_lang)
+                            
+                    except Exception as trans_e:
+                        logger.debug(f"Translation failed for {req_lang}: {trans_e}")
 
-        except Exception as e:
-            if "Too Many Requests" in str(e):
-                logger.error(f"Rate limit hit for subtitles on {title}. Waiting 60s...")
-                time.sleep(60)
-            elif "list_transcripts" in str(e):
-                 logger.error("Library version error: Update youtube_transcript_api")
-            else:
-                logger.warning(f"Subtitle API error for {title}: {e}")
+            except (TranscriptsDisabled, NoTranscriptFound):
+                logger.warning(f"No transcripts enabled for: {title}")
+            except Exception as e:
+                logger.warning(f"Subtitle API Error on {title}: {e}")
 
-    def _save_transcript(self, transcript, folder, base_filename, lang):
+    def _save_transcript(self, transcript, folder, base_filename, lang_code):
         try:
-            srt_content = SRTFormatter().format_transcript(transcript.fetch())
+            fetched = transcript.fetch()
             suffix = ".auto" if transcript.is_generated else ""
-            filename = f"{base_filename}.{lang}{suffix}.srt"
-            file_path = folder / filename
             
-            if not file_path.exists() or file_path.stat().st_size < 10:
-                with open(file_path, "w", encoding="utf-8") as f:
+            # --- Save SRT ---
+            srt_content = SRTFormatter().format_transcript(fetched)
+            srt_filename = f"{base_filename}.{lang_code}{suffix}.srt"
+            srt_path = folder / srt_filename
+            
+            if not srt_path.exists() or srt_path.stat().st_size < 10:
+                with open(srt_path, "w", encoding="utf-8") as f:
                     f.write(srt_content)
-                logger.info(f"API Saved subtitle: {filename}")
+                logger.info(f"Saved SRT: {srt_filename}")
+                
+            # --- Save Text (using TextFormatter) ---
+            txt_content = TextFormatter().format_transcript(fetched)
+            txt_filename = f"{base_filename}.{lang_code}{suffix}.txt"
+            txt_path = folder / txt_filename
+            
+            if not txt_path.exists() or txt_path.stat().st_size < 10:
+                with open(txt_path, "w", encoding="utf-8") as f:
+                    f.write(txt_content)
+                logger.info(f"Saved TXT: {txt_filename}")
+                
         except Exception as e:
-            logger.debug(f"Failed to save transcript {lang}: {e}")
+            logger.error(f"Failed to save subtitle/text for {lang_code}: {e}")
 
     def _print_summary(self, results):
         logger.info("\n" + "="*60)
-        logger.info(f"Summary: Success={len(results['success'])}, Failed={len(results['failed'])}, Skipped={len(results['skipped'])}")
-        if results['failed']:
-            for f in results['failed']:
-                logger.info(f"Fail: {f['url']} -> {f['error']}")
+        logger.info(f"Job Complete.")
+        logger.info(f"Success: {len(results['success'])}")
+        logger.info(f"Failed:  {len(results['failed'])}")
+        logger.info(f"Skipped: {len(results['skipped'])}")
         logger.info("="*60)
