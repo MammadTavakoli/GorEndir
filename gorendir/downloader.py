@@ -349,12 +349,7 @@ class YouTubeDownloader:
         base_filename = sanitize_filename(f"{number:02d}_{title}")
         
         try:
-            # چک کردن وجود متد جدید
-            if not hasattr(YouTubeTranscriptApi, 'list_transcripts'):
-                 logger.error("Error: youtube-transcript-api version is too old. Cannot fetch auto-translations.")
-                 return
-
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, cookies=self.cookies_path)
+            transcript_list = YouTubeTranscriptApi.list(video_id, cookies=self.cookies_path)
             
             needed_langs = set(self.subtitle_languages)
             
