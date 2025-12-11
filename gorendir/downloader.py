@@ -7,13 +7,15 @@ import logging
 import json
 from pathlib import Path
 from typing import List, Dict, Optional, Union, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, parse_qs
 
 # Third-party imports
 import yt_dlp
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
-from youtube_transcript_api.formatters import SRTFormatter
+try:
+    from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+    from youtube_transcript_api.formatters import SRTFormatter
+except ImportError:
+    YouTubeTranscriptApi = None
 
 # Local imports
 try:
@@ -25,7 +27,6 @@ except ImportError:
 
 DEFAULT_SUBTITLE_LANGUAGES = ["az", "en", "fa", "tr"]
 DEFAULT_MAX_RESOLUTION = 1080
-MAX_WORKERS = 3
 
 def setup_logger():
     """تنظیمات پیشرفته لاگینگ"""
@@ -62,7 +63,6 @@ class YouTubeDownloader:
         save_directory: Union[str, Path],
         subtitle_languages: Optional[List[str]] = None,
         max_resolution: int = DEFAULT_MAX_RESOLUTION,
-        max_workers: int = MAX_WORKERS,
         retry_attempts: int = 3,
         timeout: int = 30,
         cookies_path: Optional[str] = None
@@ -71,11 +71,15 @@ class YouTubeDownloader:
         self.save_directory.mkdir(parents=True, exist_ok=True)
         self.subtitle_languages = subtitle_languages or DEFAULT_SUBTITLE_LANGUAGES
         self.max_resolution = max_resolution
-        self.max_workers = max_workers
+        # حذف MAX_WORKERS: برای جلوگیری از 429 همیشه سریال دانلود می‌کنیم
         self.retry_attempts = retry_attempts
         self.timeout = timeout
         self.cookies_path = cookies_path
         self.downloaded_urls = self._load_downloaded_urls()
+        
+        # بررسی نسخه کتابخانه
+        if YouTubeTranscriptApi and not hasattr(YouTubeTranscriptApi, 'list_transcripts'):
+            logger.critical("Your 'youtube-transcript-api' library is too old. Please run: pip install --upgrade youtube-transcript-api")
         
     def _load_downloaded_urls(self) -> set:
         log_file = self.save_directory / "_urls.txt"
@@ -138,7 +142,7 @@ class YouTubeDownloader:
             except Exception as e:
                 if attempt == self.retry_attempts - 1:
                     raise DownloadError(f"Failed after {self.retry_attempts} attempts: {e}")
-                time.sleep(2 ** attempt)
+                time.sleep(2 + attempt) # افزایش تاخیر در صورت خطا
     
     def _create_folder(self, info: dict, url: str, force: bool) -> Path:
         if not force and url in self.downloaded_urls:
@@ -176,9 +180,6 @@ class YouTubeDownloader:
             'no_overwrites': True,
             'continue_dl': True,
             
-            # تنظیمات زیرنویس برای yt-dlp
-            # ما بخش اصلی زیرنویس را با API هندل می‌کنیم چون دقیق‌تر است، 
-            # اما اجازه می‌دهیم yt-dlp هم تلاشش را بکند.
             'writesubtitles': write_subs,
             'writeautomaticsub': True,
             'subtitleslangs': self.subtitle_languages, 
@@ -188,7 +189,9 @@ class YouTubeDownloader:
             'retries': 10,
             'no_check_certificate': True,
             'prefer_free_formats': True,
-            'cookiefile': self.cookies_path
+            'cookiefile': self.cookies_path,
+            # کاهش سرعت دانلود برای جلوگیری از بلاک شدن در صورت نیاز
+            # 'ratelimit': 5000000, 
         }
         
         if reverse:
@@ -218,6 +221,12 @@ class YouTubeDownloader:
         
         for url, start in tasks:
             try:
+                # تاخیر تصادفی بین ویدیوها برای جلوگیری از 429
+                if len(results['success']) > 0 or len(results['failed']) > 0:
+                    sleep_time = random.uniform(3, 7)
+                    logger.info(f"Sleeping for {sleep_time:.1f}s to avoid rate limits...")
+                    time.sleep(sleep_time)
+
                 result = self._process_single_url(
                     url, start, skip_download, force_download,
                     reverse_download, yt_dlp_write_subs, download_subtitles
@@ -315,25 +324,22 @@ class YouTubeDownloader:
 
     def download_subtitles(self, video_info_list: List[Dict], folder: Path, reverse_download: bool, start_index: int):
         if not video_info_list: return
+        if not YouTubeTranscriptApi:
+             logger.error("youtube_transcript_api not installed. Cannot download extra subtitles.")
+             return
 
         if reverse_download:
             video_info_list = list(reversed(video_info_list))
         
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = []
-            for idx, video_info in enumerate(video_info_list):
-                current_number = start_index + idx
-                future = executor.submit(
-                    self._download_single_subtitle,
-                    video_info,
-                    current_number,
-                    folder
-                )
-                futures.append(future)
+        # استفاده از حلقه ساده به جای ThreadPoolExecutor برای جلوگیری از 429
+        for idx, video_info in enumerate(video_info_list):
+            current_number = start_index + idx
             
-            for future in as_completed(futures):
-                try: future.result()
-                except Exception as e: logger.error(f"Subtitle thread error: {e}")
+            # تاخیر بین درخواست‌های زیرنویس
+            if idx > 0:
+                time.sleep(random.uniform(2, 5))
+                
+            self._download_single_subtitle(video_info, current_number, folder)
 
     def _download_single_subtitle(self, video_info, number, folder):
         video_id = video_info.get('id')
@@ -342,100 +348,79 @@ class YouTubeDownloader:
         
         base_filename = sanitize_filename(f"{number:02d}_{title}")
         
-        # try:
-        # 1. دریافت آبجکت کلی ترنسکریپت‌ها
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, cookies=self.cookies_path)
-        print()
-        print()
-        print()
-        print('@#'*80, transcript_list)
-        # لیستی از زبان‌هایی که هنوز دانلود نشده‌اند
-        needed_langs = set(self.subtitle_languages)
-        print('$%'*80, needed_langs)
-        print()
-        print()
-        print()
-        # --- گام ۱: دانلود مستقیم (Direct Match) ---
-        # ابتدا بررسی می‌کنیم آیا زیرنویس دقیق (دستی یا اتوماتیک) برای زبان‌های خواسته شده وجود دارد؟
-        for transcript in transcript_list:
-            lang_code = transcript.language_code
-            # نرمال‌سازی کد زبان (مثلاً fa-IR را fa در نظر بگیرد برای تطبیق)
-            is_match = False
-            matched_req_lang = None
-            
-            for req_lang in needed_langs:
-                if lang_code == req_lang or lang_code.startswith(req_lang + '-'):
-                    is_match = True
-                    matched_req_lang = req_lang
-                    break
-            
-            if is_match and matched_req_lang:
-                self._save_transcript(transcript, folder, base_filename, matched_req_lang)
-                if matched_req_lang in needed_langs:
-                    needed_langs.remove(matched_req_lang)
+        try:
+            # چک کردن وجود متد جدید
+            if not hasattr(YouTubeTranscriptApi, 'list_transcripts'):
+                 logger.error("Error: youtube-transcript-api version is too old. Cannot fetch auto-translations.")
+                 return
 
-        # --- گام ۲: ترجمه (Translation) برای زبان‌های باقی‌مانده ---
-        if needed_langs:
-            # پیدا کردن بهترین منبع برای ترجمه
-            source_transcript = None
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, cookies=self.cookies_path)
             
-            # الف) اولویت با انگلیسی دستی است
-            try: source_transcript = transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
-            except: pass
+            needed_langs = set(self.subtitle_languages)
             
-            # ب) سپس انگلیسی اتوماتیک
-            if not source_transcript:
-                try: source_transcript = transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
-                except: pass
-            
-            # ج) هر زبان دستی دیگر
-            if not source_transcript:
-                for t in transcript_list:
-                    if not t.is_generated:
-                        source_transcript = t
+            # --- گام ۱: دانلود مستقیم ---
+            for transcript in transcript_list:
+                lang_code = transcript.language_code
+                is_match = False
+                matched_req_lang = None
+                
+                for req_lang in needed_langs:
+                    if lang_code == req_lang or lang_code.startswith(req_lang + '-'):
+                        is_match = True
+                        matched_req_lang = req_lang
                         break
-                        
-            # د) هر زبان اتوماتیک (اولین موجود)
-            if not source_transcript:
-                try: source_transcript = next(iter(transcript_list))
-                except: pass
-            
-            # اگر منبعی پیدا شد، تمام زبان‌های باقی‌مانده را ترجمه کن
-            if source_transcript:
-                for req_lang in list(needed_langs):
-                    try:
-                        # چک کردن اینکه آیا قابل ترجمه است؟ (معمولاً همه هستند)
-                        if source_transcript.is_translatable:
-                            logger.info(f"Translating subtitles for '{title}' from {source_transcript.language_code} to {req_lang}")
-                            translated_transcript = source_transcript.translate(req_lang)
-                            self._save_transcript(translated_transcript, folder, base_filename, req_lang)
-                            needed_langs.remove(req_lang)
-                    except Exception as e:
-                        logger.warning(f"Translation failed for {req_lang}: {e}")
-            else:
-                logger.warning(f"No source transcript found to translate rest of languages for: {title}")
+                
+                if is_match and matched_req_lang:
+                    self._save_transcript(transcript, folder, base_filename, matched_req_lang)
+                    if matched_req_lang in needed_langs:
+                        needed_langs.remove(matched_req_lang)
 
-        # except (TranscriptsDisabled, NoTranscriptFound):
-        #     logger.warning(f"No subtitles available via API for: {title}")
-        # except Exception as e:
-        #     logger.warning(f"Error fetching subtitles via API for {title}: {e}")
+            # --- گام ۲: ترجمه ---
+            if needed_langs:
+                source_transcript = None
+                # تلاش برای پیدا کردن سورس مناسب
+                try: source_transcript = transcript_list.find_manually_created_transcript(['en', 'en-US'])
+                except: pass
+                
+                if not source_transcript:
+                    try: source_transcript = transcript_list.find_generated_transcript(['en', 'en-US'])
+                    except: pass
+                
+                if not source_transcript:
+                    try: source_transcript = next(iter(transcript_list))
+                    except: pass
+                
+                if source_transcript:
+                    for req_lang in list(needed_langs):
+                        try:
+                            if source_transcript.is_translatable:
+                                logger.info(f"Translating to {req_lang}...")
+                                translated_transcript = source_transcript.translate(req_lang)
+                                self._save_transcript(translated_transcript, folder, base_filename, req_lang)
+                                time.sleep(1) # تاخیر کوچک برای هر ترجمه
+                        except Exception as e:
+                            logger.warning(f"Translation failed for {req_lang}: {e}")
+
+        except Exception as e:
+            if "Too Many Requests" in str(e):
+                logger.error(f"Rate limit hit for subtitles on {title}. Waiting 60s...")
+                time.sleep(60)
+            elif "list_transcripts" in str(e):
+                 logger.error("Library version error: Update youtube_transcript_api")
+            else:
+                logger.warning(f"Subtitle API error for {title}: {e}")
 
     def _save_transcript(self, transcript, folder, base_filename, lang):
         try:
             srt_content = SRTFormatter().format_transcript(transcript.fetch())
-            
-            # پسوند auto برای مشخص شدن نوع زیرنویس
-            # اگر ترجمه شده باشد، is_generated باز هم True است چون از یک سورس گرفته شده
             suffix = ".auto" if transcript.is_generated else ""
-            
             filename = f"{base_filename}.{lang}{suffix}.srt"
             file_path = folder / filename
             
-            # بازنویسی نکن مگر اینکه فایل خیلی کوچک (ناقص) باشد
             if not file_path.exists() or file_path.stat().st_size < 10:
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(srt_content)
-                logger.info(f"Saved subtitle: {filename}")
+                logger.info(f"API Saved subtitle: {filename}")
         except Exception as e:
             logger.debug(f"Failed to save transcript {lang}: {e}")
 

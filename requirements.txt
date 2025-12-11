@@ -1,6 +1,6 @@
 yt-dlp
 pytube
-youtube-transcript-api
+youtube-transcript-api=1.2.3
 pysrt
 copy
 tqdm
