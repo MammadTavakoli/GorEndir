@@ -21,7 +21,7 @@ try:
     from .vtt_to_srt import process_directory
 except ImportError:
     def sanitize_filename(name):
-        return "".join([c for c in name if c.isalpha() or c.isdigit() or c in " ._-"]).strip()
+        return "".join([c for c in name if c.isalpha() or c.isdigit() or c in " ._-"]).strip()[:200]
     def process_directory(path): pass
     def convert_all_srt_to_text(path, sep): pass
 
@@ -113,7 +113,7 @@ class YouTubeDownloader:
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║ PROCESSING VIDEO [{current}/{total}]                                                 
 ╠══════════════════════════════════════════════════════════════════════════════╣
-║ Playlist:   {:<66} ║
+║ Collection: {:<66} ║
 ║ Title:      {:<66} ║
 ║ File Index: {:<66} ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -224,14 +224,19 @@ class YouTubeDownloader:
                     info = ydl.extract_info(url, download=False)
 
                 tasks_to_run = []
-                playlist_title = "Unknown"
+                collection_name = "Unknown"
+
+                # Determine Folder Name: Title + Uploader
+                title = info.get('title', 'Unknown')
+                uploader = info.get('uploader', 'Unknown_Uploader')
+                folder_name = sanitize_filename(f"{title}_{uploader}")
 
                 if 'entries' in info:
                     # PLAYLIST
-                    playlist_title = info.get('title', 'Unknown_Playlist')
-                    logger.info(f"Detected Playlist: {playlist_title}")
+                    collection_name = f"Playlist: {title}"
+                    logger.info(f"Detected Playlist: {collection_name}")
                     
-                    target_folder = self.main_root / sanitize_filename(playlist_title)
+                    target_folder = self.main_root / folder_name
                     target_folder.mkdir(parents=True, exist_ok=True)
                     
                     entries = list(info['entries'])
@@ -243,12 +248,10 @@ class YouTubeDownloader:
                             tasks_to_run.append((v_url, start_num + i))
                 else:
                     # SINGLE VIDEO
-                    video_title = info.get('title', 'Single_Video')
-                    playlist_title = f"Single: {video_title}"
-                    logger.info(f"Detected Single Video: {video_title}")
+                    collection_name = f"Single: {title}"
+                    logger.info(f"Detected Single Video: {collection_name}")
                     
-                    # Create Folder named after the video
-                    target_folder = self.main_root / sanitize_filename(video_title)
+                    target_folder = self.main_root / folder_name
                     target_folder.mkdir(parents=True, exist_ok=True)
                     
                     tasks_to_run.append((url, start_num))
@@ -264,7 +267,7 @@ class YouTubeDownloader:
                     res = self._process_single_task(
                         v_url, assigned_num, target_folder,
                         skip_download, force_download, yt_dlp_write_subs, download_subtitles,
-                        idx + 1, total_in_batch, playlist_title
+                        idx + 1, total_in_batch, collection_name
                     )
 
                     if res.get('skipped'): results['skipped'].append(v_url)
@@ -304,6 +307,7 @@ class YouTubeDownloader:
         if not force and canonical in self.downloaded_urls:
              return {'skipped': True, 'message': 'Already downloaded'}
 
+        # Get Title for UI
         try:
             with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'cookiefile': self.cookies_path}) as ydl:
                 pre_info = ydl.extract_info(canonical, download=False)
