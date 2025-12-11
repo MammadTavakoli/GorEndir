@@ -72,6 +72,9 @@ class YouTubeDownloader:
     ):
         self.save_directory = Path(save_directory).resolve()
         self.save_directory.mkdir(parents=True, exist_ok=True)
+        self.main_root = self.save_directory / "Download_video"
+        self.main_root.mkdir(parents=True, exist_ok=True)
+
         self.subtitle_languages = subtitle_languages or DEFAULT_SUBTITLE_LANGUAGES
         self.max_resolution = max_resolution
         self.retry_attempts = retry_attempts
@@ -102,27 +105,42 @@ class YouTubeDownloader:
 """
         logger.info("\n" + ascii_art)
 
-    def _print_video_separator(self, title, url, index, total, file_prefix):
-        # Truncate title/url if too long
-        safe_title = (title[:70] + '..') if len(title) > 70 else title
-        safe_url = (url[:70] + '..') if len(url) > 70 else url
+    def _print_video_separator(self, title, url, index, total, file_prefix, playlist_name):
+        safe_title = (title[:60] + '..') if len(title) > 60 else title
+        safe_pl = (playlist_name[:60] + '..') if len(playlist_name) > 60 else playlist_name
         
         sep = r"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║ PROCESSING VIDEO [{current}/{total}]                                                 
 ╠══════════════════════════════════════════════════════════════════════════════╣
+║ Playlist:   {:<66} ║
 ║ Title:      {:<66} ║
-║ URL:        {:<66} ║
 ║ File Index: {:<66} ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.format(
+            safe_pl,
             safe_title, 
-            safe_url, 
             f"{file_prefix}_...", 
             current=index, 
             total=total
         )
         logger.info(sep)
+    
+    def _print_summary(self, results):
+        success_count = len(results['success'])
+        failed_count = len(results['failed'])
+        skipped_count = len(results['skipped'])
+        
+        summary_box = r"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                JOB COMPLETE                                  ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║   ✅ Success:   {:<56} ║
+║   ❌ Failed:    {:<56} ║
+║   ⏭️ Skipped:   {:<56} ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".format(success_count, failed_count, skipped_count)
+        logger.info(summary_box)
 
     def _setup_api_session(self) -> requests.Session:
         session = requests.Session()
@@ -159,12 +177,7 @@ class YouTubeDownloader:
             pass
 
     def _extract_video_id(self, url: str) -> Optional[str]:
-        patterns = [
-            r'(?:youtube\.com\/watch\?v=)([^&#]+)',
-            r'(?:youtu\.be\/)([^&#]+)',
-            r'(?:youtube\.com\/embed\/)([^&#]+)',
-            r'(?:youtube\.com\/v\/)([^?#]+)'
-        ]
+        patterns = [r'(?:youtube\.com\/watch\?v=)([^&#]+)', r'(?:youtu\.be\/)([^&#]+)']
         for pattern in patterns:
             match = re.search(pattern, url)
             if match: return match.group(1)
@@ -174,23 +187,14 @@ class YouTubeDownloader:
             if 'v' in query: return query['v'][0]
         return None
 
-    def _create_folder_structure(self, info: dict, url: str, force: bool) -> Path:
-        if not force and url in self.downloaded_urls:
-            raise DownloadError(f"URL already downloaded: {url}")
-            
-        title = info.get("title", "Unknown")[:100]
-        uploader = info.get("uploader", "Unknown")[:50]
-        folder_name = sanitize_filename(f"{title}_{uploader}")
-        folder = self.save_directory / "Download_video" / folder_name
-        folder.mkdir(parents=True, exist_ok=True)
-        
+    def _save_metadata(self, info: dict, url: str, assigned_number: int, folder: Path):
         try:
-            (folder / "metadata.json").write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding='utf-8')
-            (folder / "_url.txt").write_text(url, encoding="utf-8")
+            title = info.get("title", "Unknown")[:100]
+            base_name = sanitize_filename(f"{assigned_number:02d}_{title}")
+            json_path = folder / f"{base_name}.info.json"
+            json_path.write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding='utf-8')
+            self._save_url_to_log(url)
         except Exception: pass
-        
-        self._save_url_to_log(url)
-        return folder
 
     def download_video(
         self,
@@ -204,100 +208,80 @@ class YouTubeDownloader:
     ):
         results = {'success': [], 'failed': [], 'skipped': []}
         
-        # 1. Expand Playlists first (to know total tasks)
-        logger.info("Analyzing URLs and expanding playlists...")
-        expanded_tasks = self._expand_tasks(video_urls, playlist_start, reverse_download)
-        
-        total_tasks = len(expanded_tasks)
-        logger.info(f"Total videos to process: {total_tasks}")
-        
-        for i, (url, assigned_number) in enumerate(expanded_tasks):
-            current_index = i + 1
+        inputs = []
+        if isinstance(video_urls, str): inputs.append((video_urls, playlist_start))
+        elif isinstance(video_urls, list):
+            for item in video_urls:
+                if isinstance(item, dict):
+                    for u, s in item.items(): inputs.append((u, s))
+                else: inputs.append((item, playlist_start))
+
+        for url, start_num in inputs:
+            logger.info(f"Analyzing input: {url}")
             
             try:
-                if results['success']: 
-                    sleep_time = random.uniform(5, 8)
-                    logger.info(f"Waiting {sleep_time:.1f}s before next video...")
-                    time.sleep(sleep_time)
+                with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True, 'cookiefile': self.cookies_path}) as ydl:
+                    info = ydl.extract_info(url, download=False)
 
-                # Use the assigned number directly
-                result = self._process_single_task(
-                    url, 
-                    assigned_number, # Pass the specific number for this video
-                    skip_download, 
-                    force_download, 
-                    False, # Reverse already handled in expansion
-                    yt_dlp_write_subs, 
-                    download_subtitles,
-                    current_index,
-                    total_tasks
-                )
+                tasks_to_run = []
+                playlist_title = "Unknown"
+
+                if 'entries' in info:
+                    # PLAYLIST
+                    playlist_title = info.get('title', 'Unknown_Playlist')
+                    logger.info(f"Detected Playlist: {playlist_title}")
+                    
+                    target_folder = self.main_root / sanitize_filename(playlist_title)
+                    target_folder.mkdir(parents=True, exist_ok=True)
+                    
+                    entries = list(info['entries'])
+                    if reverse_download: entries.reverse()
+                        
+                    for i, entry in enumerate(entries):
+                        if entry:
+                            v_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}"
+                            tasks_to_run.append((v_url, start_num + i))
+                else:
+                    # SINGLE VIDEO
+                    video_title = info.get('title', 'Single_Video')
+                    playlist_title = f"Single: {video_title}"
+                    logger.info(f"Detected Single Video: {video_title}")
+                    
+                    # Create Folder named after the video
+                    target_folder = self.main_root / sanitize_filename(video_title)
+                    target_folder.mkdir(parents=True, exist_ok=True)
+                    
+                    tasks_to_run.append((url, start_num))
+
+                total_in_batch = len(tasks_to_run)
                 
-                if result.get('skipped'): results['skipped'].append(url)
-                elif result.get('success'): results['success'].append(url)
-                else: results['failed'].append({'url': url, 'error': result.get('error')})
-                
+                for idx, (v_url, assigned_num) in enumerate(tasks_to_run):
+                    if results['success']: 
+                        sleep_time = random.uniform(5, 8)
+                        logger.info(f"Waiting {sleep_time:.1f}s...")
+                        time.sleep(sleep_time)
+
+                    res = self._process_single_task(
+                        v_url, assigned_num, target_folder,
+                        skip_download, force_download, yt_dlp_write_subs, download_subtitles,
+                        idx + 1, total_in_batch, playlist_title
+                    )
+
+                    if res.get('skipped'): results['skipped'].append(v_url)
+                    elif res.get('success'): results['success'].append(v_url)
+                    else: results['failed'].append({'url': v_url, 'error': res.get('error')})
+
+                if not skip_download:
+                    process_directory(target_folder)
+
             except Exception as e:
-                logger.error(f"Critical error on {url}: {e}")
+                logger.error(f"Error processing input {url}: {e}")
                 results['failed'].append({'url': url, 'error': str(e)})
-
-        if not skip_download:
-            try:
-                process_directory(self.save_directory)
-            except Exception: pass
 
         self._print_summary(results)
         return results
 
-    def _expand_tasks(self, video_urls, default_start, reverse):
-        """Expands playlists into individual video tasks with correct numbering."""
-        raw_inputs = []
-        if isinstance(video_urls, str): raw_inputs.append((video_urls, default_start))
-        elif isinstance(video_urls, list):
-            for item in video_urls:
-                if isinstance(item, dict):
-                    for u, s in item.items(): raw_inputs.append((u, s))
-                else: raw_inputs.append((item, default_start))
-        
-        expanded_tasks = []
-        
-        for url, start_num in raw_inputs:
-            # Check if it's a playlist
-            is_playlist = "list=" in url and "watch?v=" not in url # Rough check, or use yt-dlp
-            
-            # Using yt-dlp to extract flat info is safer
-            try:
-                with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True, 'cookiefile': self.cookies_path}) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    
-                if 'entries' in info:
-                    # It is a playlist
-                    entries = list(info['entries'])
-                    logger.info(f"Found playlist '{info.get('title', 'Unknown')}' with {len(entries)} videos.")
-                    
-                    if reverse:
-                        entries.reverse()
-                        
-                    for i, entry in enumerate(entries):
-                        # Filter out unavailable videos
-                        if entry:
-                            # Construct video URL
-                            v_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}"
-                            # Calculate specific number
-                            expanded_tasks.append((v_url, start_num + i))
-                else:
-                    # Single video
-                    expanded_tasks.append((url, start_num))
-                    
-            except Exception as e:
-                logger.error(f"Error expanding URL {url}: {e}")
-                # Treat as single task fallback
-                expanded_tasks.append((url, start_num))
-                
-        return expanded_tasks
-
     def _detect_original_language(self, info: dict) -> Optional[str]:
-        """Detects original language using yt-dlp metadata."""
         if not info: return None
         lang = info.get('language')
         if lang: return lang
@@ -313,11 +297,13 @@ class YouTubeDownloader:
                 return f.get('language')
         return None
 
-    def _process_single_task(self, url, assigned_number, skip, force, reverse, write_subs, dl_subs, idx, total):
+    def _process_single_task(self, url, assigned_number, target_folder, skip, force, write_subs, dl_subs, idx, total, playlist_name):
         vid_id = self._extract_video_id(url)
         canonical = f"https://www.youtube.com/watch?v={vid_id}" if vid_id else url
         
-        # Fast pre-check for title
+        if not force and canonical in self.downloaded_urls:
+             return {'skipped': True, 'message': 'Already downloaded'}
+
         try:
             with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'cookiefile': self.cookies_path}) as ydl:
                 pre_info = ydl.extract_info(canonical, download=False)
@@ -325,12 +311,11 @@ class YouTubeDownloader:
         except:
             video_title = canonical
 
-        # Print Visual Separator with Index
-        self._print_video_separator(video_title, canonical, idx, total, f"{assigned_number:02d}")
+        self._print_video_separator(video_title, canonical, idx, total, f"{assigned_number:02d}", playlist_name)
         
         try:
             info = self._fetch_info(canonical)
-            folder = self._create_folder_structure(info, canonical, force)
+            self._save_metadata(info, canonical, assigned_number, target_folder)
             
             detected_lang = self._detect_original_language(info)
             if detected_lang:
@@ -338,10 +323,8 @@ class YouTubeDownloader:
             
             ydl_opts = {
                 'format': f'bestvideo[height<={self.max_resolution}][ext=mp4]+bestaudio[ext=m4a]/best',
-                'paths': {'home': str(folder)},
-                # Use the explicitly assigned number
+                'paths': {'home': str(target_folder)},
                 'outtmpl': f'{assigned_number:02d}_%(title)s.%(ext)s', 
-                # Disable playlist logic in yt-dlp since we handle it
                 'noplaylist': True,
                 'ignoreerrors': True,
                 'no_overwrites': True,
@@ -360,21 +343,17 @@ class YouTubeDownloader:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 try: ydl.cache.remove() 
                 except: pass
-                # extract_info for single video
                 playlist_info = ydl.extract_info(canonical, download=not skip) or {}
             
             if dl_subs:
-                # Prepare single video entry
                 videos = [{
                     'id': playlist_info.get('id'), 
                     'title': playlist_info.get('title', 'Unknown'),
                     'detected_lang': detected_lang
                 }]
-
-                # Pass assigned_number to subtitle downloader
-                self._download_subtitles_api(videos, folder, assigned_number)
+                self._download_subtitles_api(videos, target_folder, assigned_number)
                 
-            return {'success': True, 'folder': str(folder)}
+            return {'success': True}
             
         except DownloadError as e:
             if "already downloaded" in str(e): return {'skipped': True, 'message': str(e)}
@@ -395,7 +374,6 @@ class YouTubeDownloader:
                 time.sleep(2 + attempt)
 
     def _get_best_translation_source(self, transcript_list):
-        """Finds source using specific API methods."""
         try: return transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
         except: pass
         try: return transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
@@ -405,35 +383,30 @@ class YouTubeDownloader:
         return None
 
     def _download_subtitles_api(self, videos: List[Dict], folder: Path, assigned_number: int):
-        # We handle one video at a time now
         for video in videos:
             vid_id = video.get('id')
             title = video.get('title')
             detected_lang = video.get('detected_lang')
             
             if not vid_id: continue
-            
             base_filename = sanitize_filename(f"{assigned_number:02d}_{title}")
             
             try:
                 transcript_list = self.ytt_api.list(vid_id)
                 processed_langs = set()
 
-                # --- STEP 1: Original Language ---
+                # 1. Original
                 try:
                     original_transcript = None
                     if detected_lang:
                         try: original_transcript = transcript_list.find_transcript([detected_lang])
                         except: pass
-                    
                     if not original_transcript:
                         for t in transcript_list:
                             if not t.is_generated:
                                 original_transcript = t
                                 break
-                    
-                    if not original_transcript:
-                        original_transcript = next(iter(transcript_list))
+                    if not original_transcript: original_transcript = next(iter(transcript_list))
                     
                     if original_transcript:
                         lang = original_transcript.language_code
@@ -443,7 +416,7 @@ class YouTubeDownloader:
                         time.sleep(1)
                 except Exception: pass
 
-                # --- STEP 2: Requested Languages ---
+                # 2. Direct Match
                 for req_lang in self.subtitle_languages:
                     if any(l == req_lang or l.startswith(req_lang + '-') for l in processed_langs):
                         continue
@@ -455,7 +428,7 @@ class YouTubeDownloader:
                     except (NoTranscriptFound, ValueError):
                         pass
 
-                # --- STEP 3: Translate ---
+                # 3. Translation
                 missing_langs = []
                 for req in self.subtitle_languages:
                     if not any(l == req or l.startswith(req + '-') for l in processed_langs):
@@ -502,11 +475,3 @@ class YouTubeDownloader:
                 
         except Exception as e:
             logger.error(f"Failed to save {lang_code}: {e}")
-
-    def _print_summary(self, results):
-        logger.info("\n" + "="*60)
-        logger.info(f"Job Complete.")
-        logger.info(f"Success: {len(results['success'])}")
-        logger.info(f"Failed:  {len(results['failed'])}")
-        logger.info(f"Skipped: {len(results['skipped'])}")
-        logger.info("="*60)
