@@ -31,8 +31,10 @@ DEFAULT_MAX_RESOLUTION = 1080
 LOG_FILE = "gorendir.log"
 
 def setup_logger():
-    """Configures a professional logger."""
+    """Configures a professional logger without duplicate printing."""
     logger = logging.getLogger("gorendir")
+    logger.propagate = False 
+    
     if logger.hasHandlers():
         logger.handlers.clear()
         
@@ -58,10 +60,6 @@ class DownloadError(Exception):
     pass
 
 class YouTubeDownloader:
-    """
-    A professional downloader class integrating yt-dlp for video and 
-    youtube_transcript_api for robust subtitle handling with cookie support.
-    """
     
     def __init__(
         self,
@@ -85,11 +83,9 @@ class YouTubeDownloader:
         self.api_session = self._setup_api_session()
         self.ytt_api = YouTubeTranscriptApi(http_client=self.api_session)
         
-        # Print Banner
         self._print_ascii_art()
 
     def _print_ascii_art(self):
-        """نمایش ASCII Art"""
         ascii_art = r"""
 ╔═══════════════════════════════════════════════════════════════════╗
 ║                                                                   ║
@@ -106,13 +102,18 @@ class YouTubeDownloader:
 """
         logger.info("\n" + ascii_art)
 
-    def _print_video_separator(self, title):
+    def _print_video_separator(self, title, url):
+        safe_title = (title[:70] + '..') if len(title) > 70 else title
+        safe_url = (url[:70] + '..') if len(url) > 70 else url
+        
         sep = r"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║ PROCESSING VIDEO:                                                            ║
-║ {:<76} ║
+║ PROCESSING VIDEO                                                             ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║ Title: {:<70}║
+║ URL:   {:<70}║
 ╚══════════════════════════════════════════════════════════════════════════════╝
-""".format(title[:76])
+""".format(safe_title, safe_url)
         logger.info(sep)
 
     def _setup_api_session(self) -> requests.Session:
@@ -200,7 +201,6 @@ class YouTubeDownloader:
         
         for url, start_idx in tasks:
             try:
-                # Anti-ban sleep between videos
                 if results['success']: 
                     sleep_time = random.uniform(5, 8)
                     logger.info(f"Waiting {sleep_time:.1f}s before next video...")
@@ -236,6 +236,31 @@ class YouTubeDownloader:
                     for u, s in item.items(): tasks.append((u, s))
                 else: tasks.append((item, default_start))
         return tasks
+    
+    def _detect_original_language(self, info: dict) -> Optional[str]:
+        """Detects original language using yt-dlp metadata."""
+        if not info: return None
+        
+        # 1. Check 'language' field
+        lang = info.get('language')
+        if lang: return lang
+        
+        # 2. Check 'audio_languages'
+        audio_languages = info.get('audio_languages')
+        if audio_languages:
+            if isinstance(audio_languages, list) and len(audio_languages) > 0:
+                return audio_languages[0]
+            elif isinstance(audio_languages, str):
+                return audio_languages
+        
+        # 3. Check formats for default audio
+        formats = info.get('formats', [])
+        for f in formats:
+            if f.get('language') and f.get('language') != 'und':
+                # Sometimes the best quality format has the lang info
+                return f.get('language')
+                
+        return None
 
     def _process_single_task(self, url, start, skip, force, reverse, write_subs, dl_subs):
         vid_id = self._extract_video_id(url)
@@ -246,7 +271,7 @@ class YouTubeDownloader:
         else:
             return {'error': 'Invalid URL', 'success': False}
         
-        # Initial Info Fetch just to get Title for the Separator
+        # Fast pre-check for title
         try:
             with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'cookiefile': self.cookies_path}) as ydl:
                 pre_info = ydl.extract_info(canonical, download=False)
@@ -254,12 +279,16 @@ class YouTubeDownloader:
         except:
             video_title = canonical
 
-        # Print Visual Separator
-        self._print_video_separator(video_title)
+        self._print_video_separator(video_title, canonical)
         
         try:
             info = self._fetch_info(canonical)
             folder = self._create_folder_structure(info, canonical, force)
+            
+            # Detect language from INFO before downloading
+            detected_lang = self._detect_original_language(info)
+            if detected_lang:
+                logger.info(f"Detected Original Audio Language: {detected_lang}")
             
             ydl_opts = {
                 'format': f'bestvideo[height<={self.max_resolution}][ext=mp4]+bestaudio[ext=m4a]/best',
@@ -290,7 +319,22 @@ class YouTubeDownloader:
             if dl_subs:
                 entries = playlist_info.get("entries")
                 if not entries: entries = [playlist_info]
-                videos = [{'id': e.get('id'), 'title': e.get('title', 'Unknown')} for e in entries if e]
+                
+                # Pass Detected Language to Subtitle Function
+                # Note: 'entries' might contain list of dicts for playlist. 
+                # For playlists, 'detected_lang' from the main list info might apply to all, or we check individually.
+                
+                videos = []
+                for e in entries:
+                    if not e: continue
+                    # Try to detect per-video if available, else fallback to main detected
+                    v_lang = self._detect_original_language(e) or detected_lang
+                    videos.append({
+                        'id': e.get('id'), 
+                        'title': e.get('title', 'Unknown'),
+                        'detected_lang': v_lang
+                    })
+
                 self._download_subtitles_api(videos, folder, reverse, start)
                 
             return {'success': True, 'folder': str(folder)}
@@ -314,6 +358,19 @@ class YouTubeDownloader:
                 if attempt == self.retry_attempts - 1: raise e
                 time.sleep(2 + attempt)
 
+    def _get_best_translation_source(self, transcript_list):
+        """Finds source using specific API methods."""
+        # 1. English Manual
+        try: return transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
+        except: pass
+        # 2. English Auto
+        try: return transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
+        except: pass
+        # 3. Fallback
+        for t in transcript_list:
+            if t.is_translatable: return t
+        return None
+
     def _download_subtitles_api(self, videos: List[Dict], folder: Path, reverse: bool, start_index: int):
         if reverse:
             videos = list(reversed(videos))
@@ -321,6 +378,8 @@ class YouTubeDownloader:
         for idx, video in enumerate(videos):
             vid_id = video.get('id')
             title = video.get('title')
+            detected_lang = video.get('detected_lang') # Get passed language
+            
             if not vid_id: continue
             
             current_num = start_index + idx
@@ -329,102 +388,76 @@ class YouTubeDownloader:
             if idx > 0: time.sleep(random.uniform(3, 6))
             
             try:
-                # 1. Get Transcript List
                 transcript_list = self.ytt_api.list(vid_id)
                 processed_langs = set()
 
-                # --- STEP 1: Original Language ---
-                try:
-                    original_transcript = None
-                    # Try manual
+                # --- STEP 1: Download Original Language (From Metadata or Fallback) ---
+                original_transcript = None
+                
+                # A. Try using the detected language code from yt-dlp
+                if detected_lang:
+                    try:
+                        # Find transcript with matching code (generated or manual)
+                        # We try finding specific transcript for this lang
+                        original_transcript = transcript_list.find_transcript([detected_lang])
+                    except: pass
+                
+                # B. Fallback: Try Manual Non-Generated
+                if not original_transcript:
                     for t in transcript_list:
                         if not t.is_generated:
                             original_transcript = t
                             break
-                    # Fallback auto
-                    if not original_transcript:
-                        for t in transcript_list:
-                            if t.is_generated:
-                                original_transcript = t
-                                break
-                    
-                    if original_transcript:
-                        lang = original_transcript.language_code
-                        logger.info(f"Found Original Language: {lang}")
-                        self._save_transcript(original_transcript, folder, base_filename, lang)
-                        processed_langs.add(lang)
-                        time.sleep(random.uniform(1, 3))
-                except Exception: pass
+                
+                # C. Fallback: First Generated
+                if not original_transcript:
+                    original_transcript = next(iter(transcript_list))
+                
+                # Save Original
+                if original_transcript:
+                    lang = original_transcript.language_code
+                    logger.info(f"Downloading Original Subtitle ({lang})...")
+                    self._save_transcript(original_transcript, folder, base_filename, lang)
+                    processed_langs.add(lang)
+                    time.sleep(1)
 
-                # --- STEP 2: Requested Languages (Direct) ---
+                # --- STEP 2: Requested Languages ---
                 for req_lang in self.subtitle_languages:
-                    is_done = any(l == req_lang or l.startswith(req_lang + '-') for l in processed_langs)
-                    if is_done: continue
-
+                    if any(l == req_lang or l.startswith(req_lang + '-') for l in processed_langs):
+                        continue
                     try:
                         transcript = transcript_list.find_transcript([req_lang])
                         self._save_transcript(transcript, folder, base_filename, req_lang)
                         processed_langs.add(req_lang)
-                        time.sleep(random.uniform(2, 4))
+                        time.sleep(random.uniform(2, 3))
                     except (NoTranscriptFound, ValueError):
                         pass
 
-                # --- STEP 3: Translate Missing ---
+                # --- STEP 3: Translate ---
                 missing_langs = []
                 for req in self.subtitle_languages:
                     if not any(l == req or l.startswith(req + '-') for l in processed_langs):
                         missing_langs.append(req)
 
                 if missing_langs:
-                    # Strategy: Try to find ANY source that translates to the target
-                    # This fixes "Translation Language Not Available"
-                    
-                    for req_lang in missing_langs:
-                        success_flag = False
-                        
-                        # A. Try Standard Priority Sources (English Manual/Auto)
-                        sources_to_try = []
-                        try: sources_to_try.append(transcript_list.find_manually_created_transcript(['en', 'en-US']))
-                        except: pass
-                        try: sources_to_try.append(transcript_list.find_generated_transcript(['en', 'en-US']))
-                        except: pass
-                        
-                        # B. Add ALL other translatable transcripts as fallback
-                        for t in transcript_list:
-                            if t not in sources_to_try and t.is_translatable:
-                                sources_to_try.append(t)
-                        
-                        # Try translating from sources until one works
-                        for source in sources_to_try:
-                            if not source.is_translatable: continue
-                            
+                    source = self._get_best_translation_source(transcript_list)
+                    if source:
+                        for req_lang in missing_langs:
                             try:
                                 logger.info(f"Translating {source.language_code} -> {req_lang}...")
                                 translated = source.translate(req_lang)
                                 self._save_transcript(translated, folder, base_filename, req_lang)
-                                success_flag = True
-                                time.sleep(random.uniform(3, 5)) # Sleep after success
-                                break # Move to next missing lang
+                                time.sleep(random.uniform(3, 5))
                             except Exception as e:
                                 err = str(e).lower()
                                 if "blocking" in err or "too many requests" in err:
-                                    logger.warning("⚠️ Rate Limit. Sleeping 60s...")
-                                    time.sleep(60)
-                                    # Retry same source once
-                                    try:
-                                        translated = source.translate(req_lang)
-                                        self._save_transcript(translated, folder, base_filename, req_lang)
-                                        success_flag = True
-                                        break
-                                    except: pass
-                                
-                                # If it's just "Language Not Available", we silently continue to next source
-                        
-                        if not success_flag:
-                             logger.warning(f"Failed to find any translation path to {req_lang}")
+                                    logger.warning("⚠️ Rate Limit Hit. Sleeping 45s...")
+                                    time.sleep(45)
+                                else:
+                                    logger.warning(f"Translation failed for {req_lang}")
 
             except (TranscriptsDisabled, NoTranscriptFound):
-                logger.warning(f"No transcripts for: {title}")
+                logger.warning(f"No transcripts available for: {title}")
             except Exception as e:
                 logger.warning(f"Subtitle API Error on {title}: {e}")
 
@@ -433,14 +466,12 @@ class YouTubeDownloader:
             fetched = transcript.fetch()
             suffix = ".auto" if transcript.is_generated else ""
             
-            # SRT
             srt_content = SRTFormatter().format_transcript(fetched)
             srt_path = folder / f"{base_filename}.{lang_code}{suffix}.srt"
             if not srt_path.exists() or srt_path.stat().st_size < 10:
                 with open(srt_path, "w", encoding="utf-8") as f: f.write(srt_content)
                 logger.info(f"Saved SRT: {srt_path.name}")
                 
-            # TXT
             txt_content = TextFormatter().format_transcript(fetched)
             txt_path = folder / f"{base_filename}.{lang_code}{suffix}.txt"
             if not txt_path.exists() or txt_path.stat().st_size < 10:
