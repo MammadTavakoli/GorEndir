@@ -342,77 +342,77 @@ class YouTubeDownloader:
         
         base_filename = sanitize_filename(f"{number:02d}_{title}")
         
-        try:
-            # 1. دریافت آبجکت کلی ترنسکریپت‌ها
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, cookies=self.cookies_path)
+        # try:
+        # 1. دریافت آبجکت کلی ترنسکریپت‌ها
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, cookies=self.cookies_path)
+        print('@#'*80, transcript_list)
+        # لیستی از زبان‌هایی که هنوز دانلود نشده‌اند
+        needed_langs = set(self.subtitle_languages)
+        print('$%'*80, needed_langs)
+        # --- گام ۱: دانلود مستقیم (Direct Match) ---
+        # ابتدا بررسی می‌کنیم آیا زیرنویس دقیق (دستی یا اتوماتیک) برای زبان‌های خواسته شده وجود دارد؟
+        for transcript in transcript_list:
+            lang_code = transcript.language_code
+            # نرمال‌سازی کد زبان (مثلاً fa-IR را fa در نظر بگیرد برای تطبیق)
+            is_match = False
+            matched_req_lang = None
             
-            # لیستی از زبان‌هایی که هنوز دانلود نشده‌اند
-            needed_langs = set(self.subtitle_languages)
+            for req_lang in needed_langs:
+                if lang_code == req_lang or lang_code.startswith(req_lang + '-'):
+                    is_match = True
+                    matched_req_lang = req_lang
+                    break
             
-            # --- گام ۱: دانلود مستقیم (Direct Match) ---
-            # ابتدا بررسی می‌کنیم آیا زیرنویس دقیق (دستی یا اتوماتیک) برای زبان‌های خواسته شده وجود دارد؟
-            for transcript in transcript_list:
-                lang_code = transcript.language_code
-                # نرمال‌سازی کد زبان (مثلاً fa-IR را fa در نظر بگیرد برای تطبیق)
-                is_match = False
-                matched_req_lang = None
-                
-                for req_lang in needed_langs:
-                    if lang_code == req_lang or lang_code.startswith(req_lang + '-'):
-                        is_match = True
-                        matched_req_lang = req_lang
-                        break
-                
-                if is_match and matched_req_lang:
-                    self._save_transcript(transcript, folder, base_filename, matched_req_lang)
-                    if matched_req_lang in needed_langs:
-                        needed_langs.remove(matched_req_lang)
+            if is_match and matched_req_lang:
+                self._save_transcript(transcript, folder, base_filename, matched_req_lang)
+                if matched_req_lang in needed_langs:
+                    needed_langs.remove(matched_req_lang)
 
-            # --- گام ۲: ترجمه (Translation) برای زبان‌های باقی‌مانده ---
-            if needed_langs:
-                # پیدا کردن بهترین منبع برای ترجمه
-                source_transcript = None
-                
-                # الف) اولویت با انگلیسی دستی است
-                try: source_transcript = transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
+        # --- گام ۲: ترجمه (Translation) برای زبان‌های باقی‌مانده ---
+        if needed_langs:
+            # پیدا کردن بهترین منبع برای ترجمه
+            source_transcript = None
+            
+            # الف) اولویت با انگلیسی دستی است
+            try: source_transcript = transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
+            except: pass
+            
+            # ب) سپس انگلیسی اتوماتیک
+            if not source_transcript:
+                try: source_transcript = transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
                 except: pass
-                
-                # ب) سپس انگلیسی اتوماتیک
-                if not source_transcript:
-                    try: source_transcript = transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
-                    except: pass
-                
-                # ج) هر زبان دستی دیگر
-                if not source_transcript:
-                    for t in transcript_list:
-                        if not t.is_generated:
-                            source_transcript = t
-                            break
-                            
-                # د) هر زبان اتوماتیک (اولین موجود)
-                if not source_transcript:
-                    try: source_transcript = next(iter(transcript_list))
-                    except: pass
-                
-                # اگر منبعی پیدا شد، تمام زبان‌های باقی‌مانده را ترجمه کن
-                if source_transcript:
-                    for req_lang in list(needed_langs):
-                        try:
-                            # چک کردن اینکه آیا قابل ترجمه است؟ (معمولاً همه هستند)
-                            if source_transcript.is_translatable:
-                                logger.info(f"Translating subtitles for '{title}' from {source_transcript.language_code} to {req_lang}")
-                                translated_transcript = source_transcript.translate(req_lang)
-                                self._save_transcript(translated_transcript, folder, base_filename, req_lang)
-                                needed_langs.remove(req_lang)
-                        except Exception as e:
-                            logger.warning(f"Translation failed for {req_lang}: {e}")
-                else:
-                    logger.warning(f"No source transcript found to translate rest of languages for: {title}")
+            
+            # ج) هر زبان دستی دیگر
+            if not source_transcript:
+                for t in transcript_list:
+                    if not t.is_generated:
+                        source_transcript = t
+                        break
+                        
+            # د) هر زبان اتوماتیک (اولین موجود)
+            if not source_transcript:
+                try: source_transcript = next(iter(transcript_list))
+                except: pass
+            
+            # اگر منبعی پیدا شد، تمام زبان‌های باقی‌مانده را ترجمه کن
+            if source_transcript:
+                for req_lang in list(needed_langs):
+                    try:
+                        # چک کردن اینکه آیا قابل ترجمه است؟ (معمولاً همه هستند)
+                        if source_transcript.is_translatable:
+                            logger.info(f"Translating subtitles for '{title}' from {source_transcript.language_code} to {req_lang}")
+                            translated_transcript = source_transcript.translate(req_lang)
+                            self._save_transcript(translated_transcript, folder, base_filename, req_lang)
+                            needed_langs.remove(req_lang)
+                    except Exception as e:
+                        logger.warning(f"Translation failed for {req_lang}: {e}")
+            else:
+                logger.warning(f"No source transcript found to translate rest of languages for: {title}")
 
-        except (TranscriptsDisabled, NoTranscriptFound):
-            logger.warning(f"No subtitles available via API for: {title}")
-        except Exception as e:
-            logger.warning(f"Error fetching subtitles via API for {title}: {e}")
+        # except (TranscriptsDisabled, NoTranscriptFound):
+        #     logger.warning(f"No subtitles available via API for: {title}")
+        # except Exception as e:
+        #     logger.warning(f"Error fetching subtitles via API for {title}: {e}")
 
     def _save_transcript(self, transcript, folder, base_filename, lang):
         try:
