@@ -65,7 +65,7 @@ class YouTubeDownloader:
         max_workers: int = MAX_WORKERS,
         retry_attempts: int = 3,
         timeout: int = 30,
-        cookies_path: Optional[str] = None  # افزودن مسیر کوکی
+        cookies_path: Optional[str] = None
     ):
         self.save_directory = Path(save_directory).resolve()
         self.save_directory.mkdir(parents=True, exist_ok=True)
@@ -96,8 +96,6 @@ class YouTubeDownloader:
             logger.error(f"Failed to save URL to log: {e}")
     
     def _extract_video_id(self, url: str) -> Optional[str]:
-        # اگر URL شامل list است، دست نزنیم تا yt-dlp هندل کند، مگر اینکه بخواهیم ID ویدیو را بگیریم
-        # اما برای متدهای داخلی نیاز به ID داریم.
         patterns = [
             r'(?:youtube\.com\/watch\?v=)([^&#]+)',
             r'(?:youtu\.be\/)([^&#]+)',
@@ -125,7 +123,7 @@ class YouTubeDownloader:
                     'no_warnings': True,
                     'socket_timeout': self.timeout,
                     'extract_flat': True,
-                    'cookiefile': self.cookies_path # استفاده از کوکی
+                    'cookiefile': self.cookies_path
                 }
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
@@ -169,21 +167,21 @@ class YouTubeDownloader:
             'format': f'bestvideo[height<={self.max_resolution}][ext=mp4]+bestaudio[ext=m4a]/best[height<={self.max_resolution}]/best',
             'paths': {'home': str(folder)} if folder else {},
             'outtmpl': '%(autonumber)02d_%(title)s.%(ext)s',
-            
             'writedescription': True,
             'writeinfojson': True,
             'writethumbnail': True,
-            
             'autonumber_start': start,
             'playliststart': start,
             'ignoreerrors': True,
             'no_overwrites': True,
             'continue_dl': True,
             
-            # تنظیمات مهم زیرنویس
+            # تنظیمات زیرنویس برای yt-dlp
+            # ما بخش اصلی زیرنویس را با API هندل می‌کنیم چون دقیق‌تر است، 
+            # اما اجازه می‌دهیم yt-dlp هم تلاشش را بکند.
             'writesubtitles': write_subs,
-            'writeautomaticsub': True, # حتما باید True باشد (نه لیست زبان)
-            'subtitleslangs': self.subtitle_languages, # لیست زبان‌ها اینجا فیلتر می‌شود
+            'writeautomaticsub': True,
+            'subtitleslangs': self.subtitle_languages, 
             'subtitlesformat': 'srt', 
             
             'socket_timeout': self.timeout,
@@ -264,18 +262,15 @@ class YouTubeDownloader:
         return tasks
     
     def _process_single_url(self, url, start, skip_download, force_download, reverse, write_subs, download_subs_api):
-        # برای دانلود با yt-dlp بهتر است از URL اصلی استفاده کنیم، اما برای API به ID نیاز داریم
         vid_id = self._extract_video_id(url)
         if not vid_id and "list=" not in url:
              return {'error': 'Invalid YouTube URL', 'success': False}
 
-        # اگر لینک پلی‌لیست است، نباید به watch?v= تبدیل شود چون فقط یک ویدیو را دانلود می‌کند
         canonical = url if "list=" in url else f"https://www.youtube.com/watch?v={vid_id}"
         
         logger.info(f"Processing: {canonical}")
         
         try:
-            # گرفتن اطلاعات کلی
             info = self._get_video_info_with_retry(canonical)
             folder = self._create_folder(info, canonical, force_download)
             
@@ -290,13 +285,11 @@ class YouTubeDownloader:
                 except: pass
                 playlist_info = ydl.extract_info(canonical, download=not skip_download) or {}
             
-            # دانلود تکمیلی زیرنویس با API
             if download_subs_api:
                 entries = playlist_info.get("entries")
                 if not entries:
                     entries = [playlist_info]
                 
-                # تبدیل entries به فرمت ساده برای تابع زیرنویس
                 videos = self._process_playlist_entries(entries)
                 self.download_subtitles(videos, folder, reverse, start)
             
@@ -321,10 +314,8 @@ class YouTubeDownloader:
         return results
 
     def download_subtitles(self, video_info_list: List[Dict], folder: Path, reverse_download: bool, start_index: int):
-        if not video_info_list:
-            return
+        if not video_info_list: return
 
-        # اگر دانلود معکوس بوده، لیست ویدیوها هم باید معکوس پردازش شود تا شماره‌ها درست در بیاید
         if reverse_download:
             video_info_list = list(reversed(video_info_list))
         
@@ -352,80 +343,71 @@ class YouTubeDownloader:
         base_filename = sanitize_filename(f"{number:02d}_{title}")
         
         try:
-            # 1. گرفتن لیست تمام زیرنویس‌ها با کوکی
+            # 1. دریافت آبجکت کلی ترنسکریپت‌ها
             transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, cookies=self.cookies_path)
             
-            langs_to_check = copy.deepcopy(self.subtitle_languages)
+            # لیستی از زبان‌هایی که هنوز دانلود نشده‌اند
+            needed_langs = set(self.subtitle_languages)
             
-            # --- گام اول: دانلود زیرنویس‌های موجود (دستی و اتوماتیک) ---
-            # بررسی دستی‌ها
-            try:
-                for lang in list(langs_to_check):
-                    try:
-                        t = transcript_list.find_manually_created_transcript([lang])
-                        self._save_transcript(t, folder, base_filename, lang)
-                        langs_to_check.remove(lang)
-                    except:
-                        pass
-            except: pass
+            # --- گام ۱: دانلود مستقیم (Direct Match) ---
+            # ابتدا بررسی می‌کنیم آیا زیرنویس دقیق (دستی یا اتوماتیک) برای زبان‌های خواسته شده وجود دارد؟
+            for transcript in transcript_list:
+                lang_code = transcript.language_code
+                # نرمال‌سازی کد زبان (مثلاً fa-IR را fa در نظر بگیرد برای تطبیق)
+                is_match = False
+                matched_req_lang = None
+                
+                for req_lang in needed_langs:
+                    if lang_code == req_lang or lang_code.startswith(req_lang + '-'):
+                        is_match = True
+                        matched_req_lang = req_lang
+                        break
+                
+                if is_match and matched_req_lang:
+                    self._save_transcript(transcript, folder, base_filename, matched_req_lang)
+                    if matched_req_lang in needed_langs:
+                        needed_langs.remove(matched_req_lang)
 
-            # بررسی اتوماتیک‌ها (برای زبان‌هایی که دستی نداشتند)
-            try:
-                for lang in list(langs_to_check):
-                    try:
-                        t = transcript_list.find_generated_transcript([lang])
-                        self._save_transcript(t, folder, base_filename, lang)
-                        langs_to_check.remove(lang)
-                    except:
-                        pass
-            except: pass
-
-            # --- گام دوم: ترجمه برای زبان‌های باقی‌مانده ---
-            if langs_to_check:
+            # --- گام ۲: ترجمه (Translation) برای زبان‌های باقی‌مانده ---
+            if needed_langs:
+                # پیدا کردن بهترین منبع برای ترجمه
                 source_transcript = None
                 
-                # اولویت ۱: انگلیسی دستی
+                # الف) اولویت با انگلیسی دستی است
                 try: source_transcript = transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
                 except: pass
                 
-                # اولویت ۲: انگلیسی اتوماتیک
+                # ب) سپس انگلیسی اتوماتیک
                 if not source_transcript:
                     try: source_transcript = transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
                     except: pass
                 
-                # اولویت ۳: هر زیرنویس دستی موجود
+                # ج) هر زبان دستی دیگر
                 if not source_transcript:
                     for t in transcript_list:
                         if not t.is_generated:
                             source_transcript = t
                             break
                             
-                # اولویت ۴: اولین زیرنویس جنریت شده موجود
+                # د) هر زبان اتوماتیک (اولین موجود)
                 if not source_transcript:
-                    try:
-                        # تلاش برای دسترسی به اولین generated transcript
-                        # چون دسترسی مستقیم به لیست generated‌ها در API کمی پیچیده است، از متد find با زبان‌های رایج استفاده می‌کنیم
-                        # یا سعی می‌کنیم از روی ارور متوجه شویم چه زبانی هست.
-                        # اما ساده‌ترین راه: اگر انگلیسی نبود، معمولا زبان اصلی ویدیو هست.
-                        # ما قبلا سعی کردیم انگلیسی را بگیریم. اگر نبود، یعنی ویدیو زبان دیگری دارد.
-                        # راه حل: استفاده از iterator اصلی اگر generated‌ها را هم شامل شود (بسته به نسخه)
-                        # راه حل مطمئن‌تر: ترجمه از 'en' شکست می‌خورد اگر نباشد.
-                        pass 
+                    try: source_transcript = next(iter(transcript_list))
                     except: pass
-
-                # اگر سورسی پیدا شد، ترجمه کن
+                
+                # اگر منبعی پیدا شد، تمام زبان‌های باقی‌مانده را ترجمه کن
                 if source_transcript:
-                    for lang in langs_to_check:
+                    for req_lang in list(needed_langs):
                         try:
+                            # چک کردن اینکه آیا قابل ترجمه است؟ (معمولاً همه هستند)
                             if source_transcript.is_translatable:
-                                translated = source_transcript.translate(lang)
-                                self._save_transcript(translated, folder, base_filename, lang)
-                        except Exception:
-                            pass
+                                logger.info(f"Translating subtitles for '{title}' from {source_transcript.language_code} to {req_lang}")
+                                translated_transcript = source_transcript.translate(req_lang)
+                                self._save_transcript(translated_transcript, folder, base_filename, req_lang)
+                                needed_langs.remove(req_lang)
+                        except Exception as e:
+                            logger.warning(f"Translation failed for {req_lang}: {e}")
                 else:
-                    # آخرین تلاش: شاید ویدیو فقط یک زیرنویس خاص (مثلا ژاپنی) دارد که ما نگرفتیم.
-                    # در اینجا log warning می‌دهیم.
-                    logger.warning(f"No source transcript found to translate to {langs_to_check} for {title}")
+                    logger.warning(f"No source transcript found to translate rest of languages for: {title}")
 
         except (TranscriptsDisabled, NoTranscriptFound):
             logger.warning(f"No subtitles available via API for: {title}")
@@ -435,14 +417,19 @@ class YouTubeDownloader:
     def _save_transcript(self, transcript, folder, base_filename, lang):
         try:
             srt_content = SRTFormatter().format_transcript(transcript.fetch())
+            
+            # پسوند auto برای مشخص شدن نوع زیرنویس
+            # اگر ترجمه شده باشد، is_generated باز هم True است چون از یک سورس گرفته شده
             suffix = ".auto" if transcript.is_generated else ""
+            
             filename = f"{base_filename}.{lang}{suffix}.srt"
             file_path = folder / filename
             
+            # بازنویسی نکن مگر اینکه فایل خیلی کوچک (ناقص) باشد
             if not file_path.exists() or file_path.stat().st_size < 10:
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(srt_content)
-                logger.info(f"API Saved subtitle: {filename}")
+                logger.info(f"Saved subtitle: {filename}")
         except Exception as e:
             logger.debug(f"Failed to save transcript {lang}: {e}")
 
