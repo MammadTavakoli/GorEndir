@@ -345,10 +345,16 @@ class YouTubeDownloader:
         # try:
         # 1. دریافت آبجکت کلی ترنسکریپت‌ها
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, cookies=self.cookies_path)
+        print()
+        print()
+        print()
         print('@#'*80, transcript_list)
         # لیستی از زبان‌هایی که هنوز دانلود نشده‌اند
         needed_langs = set(self.subtitle_languages)
         print('$%'*80, needed_langs)
+        print()
+        print()
+        print()
         # --- گام ۱: دانلود مستقیم (Direct Match) ---
         # ابتدا بررسی می‌کنیم آیا زیرنویس دقیق (دستی یا اتوماتیک) برای زبان‌های خواسته شده وجود دارد؟
         for transcript in transcript_list:
