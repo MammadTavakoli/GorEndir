@@ -15,6 +15,9 @@ import yt_dlp
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from youtube_transcript_api.formatters import SRTFormatter, TextFormatter
 
+# --- بخش ۱: کلاس YouTubeDownloader (موتور اصلی دانلود) ---
+# این بخش بدون تغییر باقی مانده است.
+
 # Local imports fallback
 try:
     from .utils import sanitize_filename, convert_all_srt_to_text
@@ -33,25 +36,20 @@ LOG_FILE = "gorendir.log"
 def setup_logger():
     """Configures a professional logger."""
     logger = logging.getLogger("gorendir")
-    logger.propagate = False 
-    
+    logger.propagate = False
     if logger.hasHandlers():
         logger.handlers.clear()
-        
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
-    
     ch = logging.StreamHandler()
     ch.setFormatter(formatter)
     logger.addHandler(ch)
-    
     try:
         fh = logging.FileHandler(LOG_FILE, encoding='utf-8', mode='a')
         fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s"))
         logger.addHandler(fh)
     except Exception:
         pass
-        
     return logger
 
 logger = setup_logger()
@@ -60,7 +58,11 @@ class DownloadError(Exception):
     pass
 
 class YouTubeDownloader:
-    
+    # ... (تمام متدهای کلاس YouTubeDownloader که در پاسخ قبلی ارائه شد، اینجا قرار می‌گیرد) ...
+    # برای جلوگیری از تکرار و طولانی شدن بیش از حد، کد کلاس در اینجا آورده نشده است،
+    # اما فرض بر این است که کد کامل و صحیح از پاسخ قبلی در این قسمت کپی شده است.
+    # در بلوک کد نهایی در انتهای این پاسخ، کد کامل کلاس قرار داده خواهد شد.
+
     def __init__(
         self,
         save_directory: Union[str, Path],
@@ -324,11 +326,11 @@ class YouTubeDownloader:
     def _get_best_translation_source(self, transcript_list):
         try:
             return transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
-        except:
+        except Exception:
             pass
         try:
             return transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
-        except:
+        except Exception:
             pass
         for t in transcript_list:
             if t.is_translatable: return t
@@ -404,18 +406,104 @@ class YouTubeDownloader:
         except Exception as e:
             logger.error(f"Failed to save {lang_code}: {e}")
 
-# if __name__ == '__main__':
-#     DOWNLOAD_PATH = "."
-#     COOKIES_FILE = None
+
+# --- بخش ۲: تابع راه‌انداز (Driver Function) ---
+
+def download_videos(video_urls: list, save_path: str, cookies_path: Optional[str] = None, **kwargs):
+    """
+    این تابع به عنوان یک رابط عمل کرده و کار با کلاس YouTubeDownloader را ساده می‌کند.
+    """
+    try:
+        downloader = YouTubeDownloader(
+            save_directory=save_path,
+            cookies_path=cookies_path
+        )
+        
+        # استخراج گزینه‌ها از kwargs با مقادیر پیش‌فرض
+        reverse = kwargs.get('reverse_download', False)
+        skip = kwargs.get('skip_download', False)
+        
+        # فراخوانی متد اصلی دانلود در کلاس
+        downloader.download_video(
+            video_urls=video_urls,
+            reverse_download=reverse,
+            skip_download=skip
+        )
+    except Exception as e:
+        logger.error(f"A critical error occurred in the download process: {e}")
+
+
+# --- بخش ۳: بخش اصلی و اجرایی برنامه ---
+
+if __name__ == '__main__':
+    # --- تنظیمات اصلی ---
+    # مسیر اصلی برای ذخیره تمام دانلودها
+    SAVE_PATH = "YouTube_Downloads"
+    # (اختیاری ولی شدیدا توصیه شده) مسیر فایل کوکی برای جلوگیری از خطای 403
+    COOKIES_FILE = None  # مثال: "C:/path/to/your/youtube-cookies.txt"
+
+    # --- لیست ویدیوها و پلی‌لیست‌های شما ---
+    # در اینجا می‌توانید URL های خود را جایگزین کنید.
     
-#     urls_to_process = [
-#         "https://www.youtube.com/watch?v=V3JQjXra7D0",
-#         "https://www.youtube.com/watch?v=5JoSryGwRy0",
-#     ]
+    sbtitle_reverse_urls = {
+        "name": "فقط دانلود زیرنویس (معکوس)",
+        "urls": [
+            "https://www.youtube.com/watch?v=xxxxxxxxxxx",
+            "https://www.youtube.com/watch?v=yyyyyyyyyyy",
+        ],
+        "reverse_download": True,
+        "skip_download": True  # True یعنی فقط زیرنویس دانلود شود
+    }
     
-#     downloader = YouTubeDownloader(
-#         save_directory=DOWNLOAD_PATH,
-#         cookies_path=COOKIES_FILE
-#     )
+    video_reverse_urls = {
+        "name": "دانلود کامل ویدیو (معکوس)",
+        "urls": [
+            "https://www.youtube.com/playlist?list=PLzzzzzzzzzzzzzzz"
+        ],
+        "reverse_download": True,
+        "skip_download": False
+    }
+
+    sbtitle_urls = {
+        "name": "فقط دانلود زیرنویس (عادی)",
+        "urls": [],
+        "reverse_download": False,
+        "skip_download": True
+    }
     
-#     downloader.download_video(urls_to_process)
+    video_urls = {
+        "name": "دانلود کامل ویدیو (عادی)",
+        "urls": [
+            "https://www.youtube.com/watch?v=V3JQjXra7D0",
+            "https://www.youtube.com/watch?v=5JoSryGwRy0"
+        ],
+        "reverse_download": False,
+        "skip_download": False
+    }
+
+    # لیست نهایی برای حلقه
+    video_list = [sbtitle_reverse_urls, video_reverse_urls, sbtitle_urls, video_urls]
+
+    # --- شروع حلقه دانلود ---
+    for video_batch in video_list:
+        batch_name = video_batch['name']
+        urls = video_batch['urls']
+        
+        print('\n' + '*' * 25, f"شروع دسته‌ی: {batch_name}", '*' * 25)
+
+        if urls:
+            reverse_dl = video_batch['reverse_download']
+            skip_dl = video_batch['skip_download']
+            
+            # فراخوانی تابع راه‌انداز جدید
+            download_videos(
+                video_urls=urls, 
+                save_path=SAVE_PATH, 
+                cookies_path=COOKIES_FILE,
+                reverse_download=reverse_dl, 
+                skip_download=skip_dl
+            )
+        else:
+            print(f"لیست URL برای دسته‌ی '{batch_name}' خالی است. این دسته نادیده گرفته شد.")
+
+    print('\n' + '=' * 25, "پایان تمام عملیات دانلود", '=' * 25)
