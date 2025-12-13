@@ -85,7 +85,6 @@ class YouTubeDownloader:
         self._print_ascii_art()
 
     def _print_ascii_art(self):
-        # This method is for UI, kept as is.
         ascii_art = r"""
 ╔═══════════════════════════════════════════════════════════════════╗
 ║                                                                   ║
@@ -103,7 +102,6 @@ class YouTubeDownloader:
         logger.info("\n" + ascii_art)
 
     def _print_video_separator(self, title, url, index, total, file_prefix, playlist_name):
-        # This method is for UI, kept as is.
         safe_title = (title[:60] + '..') if len(title) > 60 else title
         safe_pl = (playlist_name[:60] + '..') if len(playlist_name) > 60 else playlist_name
         sep = r"""
@@ -118,7 +116,6 @@ class YouTubeDownloader:
         logger.info(sep)
     
     def _print_summary(self, results):
-        # This method is for UI, kept as is.
         success_count = len(results['success'])
         failed_count = len(results['failed'])
         skipped_count = len(results['skipped'])
@@ -134,7 +131,6 @@ class YouTubeDownloader:
         logger.info(summary_box)
 
     def _setup_api_session(self) -> requests.Session:
-        # Kept original logic.
         session = requests.Session()
         session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -151,24 +147,23 @@ class YouTubeDownloader:
         return session
 
     def _load_downloaded_urls(self) -> set:
-        # Kept original logic.
         log_file = self.save_directory / "_urls.txt"
         if log_file.exists():
             try:
                 return set(log_file.read_text(encoding='utf-8').splitlines())
-            except Exception: return set()
+            except Exception:
+                return set()
         return set()
 
     def _save_url_to_log(self, url: str):
-        # Kept original logic.
         try:
             with open(self.save_directory / "_urls.txt", 'a', encoding='utf-8') as f:
                 f.write(url + "\n")
             self.downloaded_urls.add(url)
-        except Exception: pass
+        except Exception:
+            pass
     
     def _save_collection_url(self, folder: Path, url: str):
-        """[IMPROVEMENT] Saves the main URL of the collection to a _url.txt file."""
         try:
             url_file = folder / "_url.txt"
             if not url_file.exists():
@@ -178,7 +173,6 @@ class YouTubeDownloader:
             logger.warning(f"Could not save collection URL: {e}")
 
     def _extract_video_id(self, url: str) -> Optional[str]:
-        # Kept original logic.
         patterns = [r'(?:youtube\.com\/watch\?v=)([^&#]+)', r'(?:youtu\.be\/)([^&#]+)']
         for pattern in patterns:
             match = re.search(pattern, url)
@@ -190,13 +184,13 @@ class YouTubeDownloader:
         return None
 
     def _save_metadata(self, info: dict, url: str, assigned_number: int, folder: Path):
-        # Kept original logic, but REMOVED the call to _save_url_to_log to avoid logging before success.
         try:
             title = info.get("title", "Unknown")[:100]
             base_name = sanitize_filename(f"{assigned_number:02d}_{title}")
             json_path = folder / f"{base_name}.info.json"
             json_path.write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding='utf-8')
-        except Exception: pass
+        except Exception:
+            pass
 
     def download_video(self, video_urls: Union[str, List[str], Dict[str, int]], playlist_start: int = 1, skip_download: bool = False, force_download: bool = False, reverse_download: bool = False, yt_dlp_write_subs: bool = True, download_subtitles: bool = True):
         results = {'success': [], 'failed': [], 'skipped': []}
@@ -211,7 +205,6 @@ class YouTubeDownloader:
         for url, start_num in inputs:
             logger.info(f"Analyzing input: {url}")
             try:
-                # [IMPROVEMENT] Use a single ydl instance for initial info extraction.
                 with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True, 'cookiefile': self.cookies_path}) as ydl:
                     info = ydl.extract_info(url, download=False)
                 
@@ -223,7 +216,6 @@ class YouTubeDownloader:
                 target_folder = self.main_root / folder_name
                 target_folder.mkdir(parents=True, exist_ok=True)
                 
-                # [IMPROVEMENT] Save the main collection URL here.
                 self._save_collection_url(target_folder, url)
 
                 if 'entries' in info and info['entries']:
@@ -262,7 +254,6 @@ class YouTubeDownloader:
         return results
 
     def _detect_original_language(self, info: dict) -> Optional[str]:
-        # Kept original logic.
         if not info: return None
         lang = info.get('language') or info.get('audio_lang')
         if lang: return lang
@@ -280,7 +271,6 @@ class YouTubeDownloader:
         
         video_title = "Unknown Video"
         try:
-            # We need a preliminary info fetch to get the title for the separator.
             with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'cookiefile': self.cookies_path}) as ydl:
                 pre_info = ydl.extract_info(canonical, download=False)
                 video_title = pre_info.get('title', canonical)
@@ -295,14 +285,14 @@ class YouTubeDownloader:
                 'paths': {'home': str(target_folder)},
                 'outtmpl': f'{assigned_number:02d}_%(title)s.%(ext)s', 
                 'noplaylist': True,
-                'ignoreerrors': False, # [IMPROVEMENT] This will raise an exception on download error.
+                'ignoreerrors': False,
                 'no_overwrites': not force,
                 'continue_dl': True,
                 'quiet': True,
                 'no_warnings': True,
                 'cookiefile': self.cookies_path,
-                'writesubtitles': write_subs, # Kept original logic.
-                'writeautomaticsub': True,    # Kept original logic.
+                'writesubtitles': write_subs,
+                'writeautomaticsub': True,
                 'subtitleslangs': self.subtitle_languages,
             }
             if skip:
@@ -312,7 +302,6 @@ class YouTubeDownloader:
                 info = ydl.extract_info(canonical, download=not skip)
                 if not info: raise DownloadError("yt-dlp failed to return info dictionary.")
 
-            # --- Success Path ---
             self._save_metadata(info, canonical, assigned_number, target_folder)
             
             detected_lang = self._detect_original_language(info)
@@ -333,17 +322,19 @@ class YouTubeDownloader:
             return {'error': str(e), 'success': False}
 
     def _get_best_translation_source(self, transcript_list):
-        # Kept original, working logic.
-        try: return transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
-        except: pass
-        try: return transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
-        except: pass
+        try:
+            return transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
+        except:
+            pass
+        try:
+            return transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
+        except:
+            pass
         for t in transcript_list:
             if t.is_translatable: return t
         return None
 
     def _download_subtitles_api(self, videos: List[Dict], folder: Path, assigned_number: int):
-        # Kept original, working logic.
         for video in videos:
             vid_id, title, detected_lang = video.get('id'), video.get('title'), video.get('detected_lang')
             if not vid_id: continue
@@ -352,7 +343,7 @@ class YouTubeDownloader:
             try:
                 transcript_list = self.ytt_api.list_transcripts(vid_id)
                 processed_langs = set()
-                # 1. Original Language
+
                 try:
                     original_transcript = transcript_list.find_transcript([detected_lang]) if detected_lang else next(iter(transcript_list))
                     lang = original_transcript.language_code
@@ -360,8 +351,9 @@ class YouTubeDownloader:
                     self._save_transcript(original_transcript, folder, base_filename, lang)
                     processed_langs.add(lang.split('-')[0])
                     time.sleep(1)
-                except Exception: pass
-                # 2. Direct Matches
+                except Exception:
+                    pass
+
                 for req_lang in self.subtitle_languages:
                     if req_lang in processed_langs: continue
                     try:
@@ -369,8 +361,9 @@ class YouTubeDownloader:
                         self._save_transcript(transcript, folder, base_filename, req_lang)
                         processed_langs.add(req_lang)
                         time.sleep(random.uniform(1, 2))
-                    except (NoTranscriptFound, ValueError): pass
-                # 3. Translations
+                    except (NoTranscriptFound, ValueError):
+                        pass
+
                 missing_langs = [lang for lang in self.subtitle_languages if lang not in processed_langs]
                 if missing_langs:
                     source = self._get_best_translation_source(transcript_list)
@@ -385,12 +378,14 @@ class YouTubeDownloader:
                                 if "blocking" in str(e).lower() or "too many requests" in str(e).lower():
                                     logger.warning("⚠️ Rate Limit Hit. Sleeping 45s...")
                                     time.sleep(45)
-                                else: logger.warning(f"Translation failed for {req_lang}")
-            except (TranscriptsDisabled, NoTranscriptFound): logger.warning(f"No transcripts available for: {title}")
-            except Exception as e: logger.warning(f"Subtitle API Error on {title}: {e}")
+                                else:
+                                    logger.warning(f"Translation failed for {req_lang}")
+            except (TranscriptsDisabled, NoTranscriptFound):
+                logger.warning(f"No transcripts available for: {title}")
+            except Exception as e:
+                logger.warning(f"Subtitle API Error on {title}: {e}")
 
     def _save_transcript(self, transcript, folder, base_filename, lang_code):
-        # Kept original, working logic.
         try:
             fetched = transcript.fetch()
             suffix = ".auto" if transcript.is_generated else ""
@@ -407,21 +402,17 @@ class YouTubeDownloader:
                 with open(txt_path, "w", encoding="utf-8") as f: f.write(txt_content)
                 logger.info(f"Saved TXT: {txt_path.name}")
         except Exception as e:
-#             logger.error(f"Failed to save {lang_code}: {e}")
+            logger.error(f"Failed to save {lang_code}: {e}")
 
-# # Example of how to run the downloader
 # if __name__ == '__main__':
-#     # --- CONFIGURATION ---
-#     DOWNLOAD_PATH = "."  # e.g. "my_downloads"
-#     COOKIES_FILE = None  # e.g., "C:/path/to/your/youtube-cookies.txt"
+#     DOWNLOAD_PATH = "."
+#     COOKIES_FILE = None
     
-#     # --- URLS TO DOWNLOAD ---
 #     urls_to_process = [
 #         "https://www.youtube.com/watch?v=V3JQjXra7D0",
 #         "https://www.youtube.com/watch?v=5JoSryGwRy0",
 #     ]
     
-#     # --- INITIALIZE AND RUN ---
 #     downloader = YouTubeDownloader(
 #         save_directory=DOWNLOAD_PATH,
 #         cookies_path=COOKIES_FILE
