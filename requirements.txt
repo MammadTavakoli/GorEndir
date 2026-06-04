@@ -1,7 +1,7 @@
-yt-dlp>=2024.1.0
-pytube>=15.0.0
-youtube-transcript-api>=0.6.0
-pysrt>=1.1.0
-tqdm>=4.65.0
-chardet>=5.0.0
-requests>=2.31.0
+yt-dlp
+pytube
+youtube-transcript-api>=1.2.4
+pysrt
+tqdm
+chardet
+requests>=2.32.4
