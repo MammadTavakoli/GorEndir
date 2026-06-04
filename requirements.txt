@@ -1,8 +1,7 @@
 yt-dlp
 pytube
-youtube-transcript-api=1.2.3
+youtube-transcript-api>=1.2.4
 pysrt
-copy
 tqdm
 chardet
 requests

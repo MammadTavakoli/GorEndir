@@ -7,11 +7,12 @@ import http.cookiejar
 import requests
 import re
 from pathlib import Path
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Tuple
 from urllib.parse import urlparse, parse_qs
 
 # Third-party imports
 import yt_dlp
+from tqdm import tqdm
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from youtube_transcript_api.formatters import SRTFormatter, TextFormatter
 
@@ -20,7 +21,7 @@ try:
     from .utils import sanitize_filename, convert_all_srt_to_text
     from .vtt_to_srt import process_directory
 except ImportError:
-    def sanitize_filename(name):
+    def sanitize_filename(name: str) -> str:
         return "".join([c for c in name if c.isalpha() or c.isdigit() or c in " ._-"]).strip()[:200]
     def process_directory(path): pass
     def convert_all_srt_to_text(path, sep): pass
@@ -29,6 +30,8 @@ except ImportError:
 DEFAULT_SUBTITLE_LANGUAGES = ["az", "en", "fa", "tr"]
 DEFAULT_MAX_RESOLUTION = 1080
 LOG_FILE = "gorendir.log"
+RATE_LIMIT_INITIAL_SLEEP = 45
+RATE_LIMIT_MAX_RETRIES = 3
 
 def setup_logger():
     """Configures a professional logger without duplicate printing."""
@@ -86,6 +89,9 @@ class YouTubeDownloader:
         self.api_session = self._setup_api_session()
         self.ytt_api = YouTubeTranscriptApi(http_client=self.api_session)
         
+        # tqdm progress bar reference (used during downloads)
+        self._current_pbar: Optional[tqdm] = None
+        
         self._print_ascii_art()
 
     def _print_ascii_art(self):
@@ -105,28 +111,27 @@ class YouTubeDownloader:
 """
         logger.info("\n" + ascii_art)
 
-    def _print_video_separator(self, title, url, index, total, file_prefix, playlist_name):
-        safe_title = (title[:60] + '..') if len(title) > 60 else title
-        safe_pl = (playlist_name[:60] + '..') if len(playlist_name) > 60 else playlist_name
+    def _print_video_separator(self, title: str, url: str, index: int, total: int, file_prefix: str, playlist_name: str):
+        safe_title = (title[:55] + '..') if len(title) > 55 else title
+        safe_pl = (playlist_name[:55] + '..') if len(playlist_name) > 55 else playlist_name
         
         sep = r"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║ PROCESSING VIDEO [{current}/{total}]                                                 
+║ PROCESSING VIDEO [{:>3}/{:>3}]                                                   ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║ Collection: {:<66} ║
 ║ Title:      {:<66} ║
 ║ File Index: {:<66} ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.format(
+            index, total,
             safe_pl,
             safe_title, 
             f"{file_prefix}_...", 
-            current=index, 
-            total=total
         )
         logger.info(sep)
     
-    def _print_summary(self, results):
+    def _print_summary(self, results: Dict[str, list]):
         success_count = len(results['success'])
         failed_count = len(results['failed'])
         skipped_count = len(results['skipped'])
@@ -141,11 +146,17 @@ class YouTubeDownloader:
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.format(success_count, failed_count, skipped_count)
         logger.info(summary_box)
+        
+        # Log failed URLs details
+        if results['failed']:
+            logger.warning("Failed downloads:")
+            for fail in results['failed']:
+                logger.warning(f"  - {fail.get('url', 'Unknown')}: {fail.get('error', 'Unknown error')}")
 
     def _setup_api_session(self) -> requests.Session:
         session = requests.Session()
         session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
         })
 
@@ -173,8 +184,8 @@ class YouTubeDownloader:
             with open(self.save_directory / "_urls.txt", 'a', encoding='utf-8') as f:
                 f.write(url + "\n")
             self.downloaded_urls.add(url)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to save URL to log: {e}")
 
     def _extract_video_id(self, url: str) -> Optional[str]:
         patterns = [r'(?:youtube\.com\/watch\?v=)([^&#]+)', r'(?:youtu\.be\/)([^&#]+)']
@@ -182,7 +193,7 @@ class YouTubeDownloader:
             match = re.search(pattern, url)
             if match: return match.group(1)
         parsed = urlparse(url)
-        if parsed.netloc in ['youtube.com', 'www.youtube.com']:
+        if parsed.netloc in ['youtube.com', 'www.youtube.com', 'm.youtube.com']:
             query = parse_qs(parsed.query)
             if 'v' in query: return query['v'][0]
         return None
@@ -192,36 +203,102 @@ class YouTubeDownloader:
             title = info.get("title", "Unknown")[:100]
             base_name = sanitize_filename(f"{assigned_number:02d}_{title}")
             json_path = folder / f"{base_name}.info.json"
-            json_path.write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding='utf-8')
+            
+            # Save only essential metadata, not the full info dict (can be very large)
+            essential_info = {
+                'id': info.get('id'),
+                'title': info.get('title'),
+                'description': info.get('description', '')[:500],
+                'duration': info.get('duration'),
+                'upload_date': info.get('upload_date'),
+                'uploader': info.get('uploader'),
+                'uploader_id': info.get('uploader_id'),
+                'channel': info.get('channel'),
+                'view_count': info.get('view_count'),
+                'like_count': info.get('like_count'),
+                'categories': info.get('categories'),
+                'tags': info.get('tags', [])[:20],
+                'language': info.get('language'),
+                'webpage_url': info.get('webpage_url'),
+            }
+            json_path.write_text(json.dumps(essential_info, indent=2, ensure_ascii=False), encoding='utf-8')
             self._save_url_to_log(url)
-        except Exception: pass
+        except Exception as e:
+            logger.warning(f"Failed to save metadata: {e}")
+
+    def _normalize_inputs(
+        self, 
+        video_urls: Union[str, List[str], Dict[str, int], List[Union[str, Dict[str, int]]]], 
+        playlist_start: int = 1
+    ) -> List[Tuple[str, int]]:
+        """Normalize all input formats into a list of (url, start_num) tuples."""
+        inputs = []
+        
+        if isinstance(video_urls, str):
+            inputs.append((video_urls, playlist_start))
+        elif isinstance(video_urls, dict):
+            for u, s in video_urls.items():
+                inputs.append((u, s if s > 0 else 1))
+        elif isinstance(video_urls, list):
+            for item in video_urls:
+                if isinstance(item, dict):
+                    for u, s in item.items():
+                        inputs.append((u, s if s > 0 else 1))
+                elif isinstance(item, str):
+                    inputs.append((item, playlist_start))
+                else:
+                    logger.warning(f"Skipping unsupported item type in list: {type(item)}")
+        else:
+            logger.error(f"Unsupported video_urls format: {type(video_urls)}")
+        
+        return inputs
 
     def download_video(
         self,
-        video_urls: Union[str, List[str], Dict[str, int]],
+        video_urls: Union[str, List[str], Dict[str, int], List[Union[str, Dict[str, int]]]],
         playlist_start: int = 1,
         skip_download: bool = False,
         force_download: bool = False,
         reverse_download: bool = False,
         yt_dlp_write_subs: bool = True,
-        download_subtitles: bool = True
-    ):
-        results = {'success': [], 'failed': [], 'skipped': []}
+        download_subtitles: bool = True,
+        playlist_end: int = 0,
+    ) -> Dict[str, list]:
+        """
+        Download videos from YouTube.
         
-        inputs = []
-        if isinstance(video_urls, str): inputs.append((video_urls, playlist_start))
-        elif isinstance(video_urls, list):
-            for item in video_urls:
-                if isinstance(item, dict):
-                    for u, s in item.items(): inputs.append((u, s))
-                else: inputs.append((item, playlist_start))
+        Args:
+            video_urls: URL(s) to download. Can be:
+                - str: Single URL
+                - Dict[str, int]: URL -> start number mapping  
+                - List[Union[str, Dict[str, int]]]: Mixed list
+            playlist_start: Default start number for playlists (1-indexed)
+            skip_download: If True, only extract info without downloading
+            force_download: If True, re-download even if already downloaded
+            reverse_download: If True, reverse playlist order
+            yt_dlp_write_subs: If True, yt-dlp writes subtitles
+            download_subtitles: If True, download subtitles via API
+            playlist_end: If > 0, stop downloading after this many videos
+        """
+        results: Dict[str, list] = {'success': [], 'failed': [], 'skipped': []}
+        
+        inputs = self._normalize_inputs(video_urls, playlist_start)
+        
+        if not inputs:
+            logger.error("No valid inputs provided")
+            return results
 
         for url, start_num in inputs:
-            logger.info(f"Analyzing input: {url}")
+            logger.info(f"Analyzing input: {url} (start from #{start_num})")
             
             try:
                 with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True, 'cookiefile': self.cookies_path}) as ydl:
                     info = ydl.extract_info(url, download=False)
+
+                if info is None:
+                    logger.error(f"Failed to extract info from {url}")
+                    results['failed'].append({'url': url, 'error': 'No info extracted'})
+                    continue
 
                 tasks_to_run = []
                 collection_name = "Unknown"
@@ -234,45 +311,47 @@ class YouTubeDownloader:
                 if 'entries' in info:
                     # PLAYLIST
                     collection_name = f"Playlist: {title}"
-                    logger.info(f"Detected Playlist: {collection_name}")
+                    logger.info(f"Detected Playlist: {collection_name} ({info.get('playlist_count', '?')} videos)")
                     
                     target_folder = self.main_root / folder_name
                     target_folder.mkdir(parents=True, exist_ok=True)
                     
-                    entries = list(info['entries'])
-                    total_entries = len(entries)
+                    # PLAYLIST PROCESSING LOGIC:
+                    # In normal mode:  V1→01, V2→02, ... V20→20
+                    # In reverse mode: V20→01, V19→02, ... V1→20
+                    # start_num always means "skip N videos from the start of DOWNLOAD order"
+                    #   normal:  skip from beginning of playlist
+                    #   reverse: skip from end of playlist (which is start of reversed order)
+                    #
+                    # Order of operations:
+                    #   1) Filter None entries
+                    #   2) Reverse (if reverse mode) — transforms download order
+                    #   3) Skip by start_num (based on DOWNLOAD order, not original)
+                    #   4) Apply playlist_end limit
+                    #   5) Number from start_num based on download order
                     
-                    # --- منطق اصلاح شده و ترکیب شده با حالت برعکس ---
+                    entries = [e for e in info['entries'] if e is not None]
+                    total_original = len(entries)
+                    
+                    # Step 2: Reverse FIRST so skip/numbering work on download order
                     if reverse_download:
-                        # ۱. ابتدا لیست را برعکس می‌کنیم (آخرین ویدیو می‌شود ایندکس 0)
                         entries.reverse()
-                        logger.info("Reverse download enabled. Ordering from last to first.")
-                        
-                        if start_num > 1:
-                            # ۲. در حالت برعکس، اسکیپ کردن یعنی حذف از ابتدای لیست برعکس شده
-                            skip_count = start_num - 1
-                            if skip_count < total_entries:
-                                logger.info(f"Skipping last {skip_count} videos. Starting from reverse index {start_num}")
-                                entries = entries[skip_count:]
-                            else:
-                                logger.warning(f"Start number {start_num} is greater than playlist length ({total_entries}).")
-                                entries = []
-                    else:
-                        # حالت عادی (Forward)
-                        if start_num > 1:
-                            start_index = start_num - 1
-                            if start_index < total_entries:
-                                logger.info(f"Skipping to video {start_num} (Index {start_index})")
-                                entries = entries[start_index:]
-                            else:
-                                logger.warning(f"Start number {start_num} is greater than playlist length ({total_entries}).")
-                                entries = []
-                    # -----------------------------------------------------
-                        
+                    
+                    # Step 3: Skip entries before start_num (in DOWNLOAD order)
+                    skip_count = max(0, start_num - 1)
+                    entries = entries[skip_count:]
+                    
+                    # Step 4: Apply playlist_end limit
+                    if playlist_end > 0:
+                        entries = entries[:playlist_end]
+                    
+                    logger.info(f"Will process {len(entries)} videos (skipped first {skip_count} in download order, reverse={reverse_download})")
+                    
+                    # Step 5: Number from start_num based on download order
                     for i, entry in enumerate(entries):
-                        if entry:
-                            v_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}"
-                            tasks_to_run.append((v_url, start_num + i))
+                        v_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}"
+                        assigned_num = start_num + i
+                        tasks_to_run.append((v_url, assigned_num))
                 else:
                     # SINGLE VIDEO
                     collection_name = f"Single: {title}"
@@ -283,15 +362,34 @@ class YouTubeDownloader:
                     
                     tasks_to_run.append((url, start_num))
                 
-                with open(target_folder / "_url.txt", 'w', encoding='utf-8') as f:
-                    f.write(url)
+                # Only write _url.txt if target_folder exists and tasks exist
+                if tasks_to_run and target_folder.exists():
+                    with open(target_folder / "_url.txt", 'w', encoding='utf-8') as f:
+                        f.write(url)
                     
                 total_in_batch = len(tasks_to_run)
                 
-                for idx, (v_url, assigned_num) in enumerate(tasks_to_run):
+                if total_in_batch == 0:
+                    logger.warning(f"No videos to process for {url} (start_num={start_num} may exceed playlist length)")
+                    continue
+                    
+                # ── tqdm Progress Bar for playlist ──
+                pbar = tqdm(
+                    tasks_to_run,
+                    desc=f"📥 {collection_name[:40]}",
+                    unit="video",
+                    bar_format="{l_bar}{bar:30}{r_bar}",
+                    ncols=100,
+                )
+                
+                for idx, (v_url, assigned_num) in enumerate(pbar):
+                    # Update tqdm postfix with current video info
+                    pbar.set_postfix_str(f"#{assigned_num:02d}")
+                    
+                    # Only sleep after a successful download to avoid wasting time on failures/skips
                     if results['success']: 
                         sleep_time = random.uniform(5, 8)
-                        logger.info(f"Waiting {sleep_time:.1f}s...")
+                        pbar.write(f"⏳ Waiting {sleep_time:.1f}s...")
                         time.sleep(sleep_time)
 
                     res = self._process_single_task(
@@ -300,11 +398,16 @@ class YouTubeDownloader:
                         idx + 1, total_in_batch, collection_name
                     )
 
-                    if res.get('skipped'): results['skipped'].append(v_url)
-                    elif res.get('success'): results['success'].append(v_url)
-                    else: results['failed'].append({'url': v_url, 'error': res.get('error')})
+                    if res.get('skipped'):
+                        results['skipped'].append(v_url)
+                        pbar.write(f"⏭️  Skipped: {v_url}")
+                    elif res.get('success'):
+                        results['success'].append(v_url)
+                    else:
+                        results['failed'].append({'url': v_url, 'error': res.get('error', 'Unknown error')})
+                        pbar.write(f"❌ Failed: {res.get('error', 'Unknown error')[:60]}")
 
-                if not skip_download:
+                if not skip_download and target_folder.exists():
                     process_directory(target_folder)
 
             except Exception as e:
@@ -315,35 +418,57 @@ class YouTubeDownloader:
         return results
 
     def _detect_original_language(self, info: dict) -> Optional[str]:
-        if not info: return None
+        """Detect the original language of a video from metadata."""
+        if not info:
+            return None
+        
         lang = info.get('language')
-        if lang: return lang
+        if lang:
+            return lang
+        
         audio_languages = info.get('audio_languages')
         if audio_languages:
             if isinstance(audio_languages, list) and len(audio_languages) > 0:
                 return audio_languages[0]
             elif isinstance(audio_languages, str):
                 return audio_languages
+        
         formats = info.get('formats', [])
-        for f in formats:
-            if f.get('language') and f.get('language') != 'und':
-                return f.get('language')
+        for fmt in formats:
+            fmt_lang = fmt.get('language')
+            if fmt_lang and fmt_lang not in ('und', None):
+                return fmt_lang
         return None
 
-    def _process_single_task(self, url, assigned_number, target_folder, skip, force, write_subs, dl_subs, idx, total, playlist_name):
+    def _process_single_task(
+        self,
+        url: str,
+        assigned_number: int,
+        target_folder: Path,
+        skip: bool,
+        force: bool,
+        write_subs: bool,
+        dl_subs: bool,
+        idx: int,
+        total: int,
+        playlist_name: str
+    ) -> Dict[str, any]:
         vid_id = self._extract_video_id(url)
         canonical = f"https://www.youtube.com/watch?v={vid_id}" if vid_id else url
         
         if not force and canonical in self.downloaded_urls:
-             return {'skipped': True, 'message': 'Already downloaded'}
+            logger.info(f"Skipping (already downloaded): {canonical}")
+            return {'skipped': True, 'message': 'Already downloaded'}
 
-        # Get Title for UI
+        # Get Title for UI display
+        video_title = canonical
         try:
             with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'cookiefile': self.cookies_path}) as ydl:
                 pre_info = ydl.extract_info(canonical, download=False)
-                video_title = pre_info.get('title', canonical)
-        except:
-            video_title = canonical
+                if pre_info:
+                    video_title = pre_info.get('title', canonical)
+        except Exception as e:
+            logger.warning(f"Could not fetch title for {canonical}: {e}")
 
         self._print_video_separator(video_title, canonical, idx, total, f"{assigned_number:02d}", playlist_name)
         
@@ -355,8 +480,11 @@ class YouTubeDownloader:
             if detected_lang:
                 logger.info(f"Detected Original Audio Language: {detected_lang}")
             
+            # Get video size for tqdm progress bar
+            video_size = self._get_video_size(info)
+            
             ydl_opts = {
-                'format': f'bestvideo[height<={self.max_resolution}][ext=mp4]+bestaudio[ext=m4a]/best',
+                'format': f'bestvideo[height<={self.max_resolution}][ext=mp4]+bestaudio[ext=m4a]/best[height<={self.max_resolution}]',
                 'paths': {'home': str(target_folder)},
                 'outtmpl': f'{assigned_number:02d}_%(title)s.%(ext)s', 
                 'noplaylist': True,
@@ -369,17 +497,37 @@ class YouTubeDownloader:
                 'writesubtitles': write_subs,
                 'writeautomaticsub': True,
                 'subtitleslangs': self.subtitle_languages,
+                'progress_hooks': [self._progress_hook],
             }
             
             if skip:
                 ydl_opts.update({'simulate': True, 'skip_download': True})
             
+            # Create tqdm progress bar for individual video download
+            self._current_pbar = tqdm(
+                total=video_size,
+                unit='B',
+                unit_scale=True,
+                unit_divisor=1024,
+                desc=f"  📦 #{assigned_number:02d} {video_title[:35]}",
+                bar_format="{desc}: {percentage:3.0f}%|{bar:25}| {n_fmt}/{total_fmt} [{rate_fmt} ETA:{remaining}]",
+                ncols=100,
+                leave=True,
+            )
+            
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                try: ydl.cache.remove() 
-                except: pass
+                try:
+                    ydl.cache.remove()
+                except Exception:
+                    pass
                 playlist_info = ydl.extract_info(canonical, download=not skip) or {}
             
-            if dl_subs:
+            # Close the download progress bar
+            if self._current_pbar:
+                self._current_pbar.close()
+                self._current_pbar = None
+            
+            if dl_subs and playlist_info:
                 videos = [{
                     'id': playlist_info.get('id'), 
                     'title': playlist_info.get('title', 'Unknown'),
@@ -390,67 +538,155 @@ class YouTubeDownloader:
             return {'success': True}
             
         except DownloadError as e:
-            if "already downloaded" in str(e): return {'skipped': True, 'message': str(e)}
-            raise
+            if self._current_pbar:
+                self._current_pbar.close()
+                self._current_pbar = None
+            if "already downloaded" in str(e):
+                return {'skipped': True, 'message': str(e)}
+            return {'error': str(e)}
         except Exception as e:
-            return {'error': str(e), 'success': False}
+            if self._current_pbar:
+                self._current_pbar.close()
+                self._current_pbar = None
+            logger.error(f"Error processing {canonical}: {e}")
+            return {'error': str(e)}
 
-    def _fetch_info(self, url):
+    def _get_video_size(self, info: dict) -> Optional[int]:
+        """Extract total video file size from info dict for progress bar."""
+        try:
+            # Try to get filesize from format info
+            filesize = info.get('filesize')
+            if filesize:
+                return filesize
+            
+            # Try filesize_approx
+            filesize = info.get('filesize_approx')
+            if filesize:
+                return int(filesize)
+            
+            # Calculate from requested formats
+            formats = info.get('requested_formats', [])
+            total = 0
+            for f in formats:
+                fs = f.get('filesize') or f.get('filesize_approx', 0)
+                if fs:
+                    total += int(fs)
+            if total > 0:
+                return total
+            
+            # Fallback: estimate from duration + resolution
+            duration = info.get('duration', 0)
+            if duration:
+                # Rough estimate: ~1MB per minute at 1080p
+                return int(duration * 1_000_000 / 60)
+            
+            return None
+        except Exception:
+            return None
+
+    def _progress_hook(self, d: dict):
+        """yt-dlp progress hook — updates tqdm bar in real-time."""
+        if d['status'] == 'downloading':
+            if self._current_pbar:
+                downloaded = d.get('downloaded_bytes', 0)
+                total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+                
+                # Update total if we now know it
+                if total and self._current_pbar.total != total:
+                    self._current_pbar.total = total
+                    self._current_pbar.refresh()
+                
+                # Update progress
+                self._current_pbar.n = downloaded
+                self._current_pbar.refresh()
+                
+        elif d['status'] == 'finished':
+            if self._current_pbar:
+                # Ensure bar reaches 100%
+                if self._current_pbar.total:
+                    self._current_pbar.n = self._current_pbar.total
+                self._current_pbar.refresh()
+                self._current_pbar.write("  ✅ Download finished, processing...")
+
+    def _fetch_info(self, url: str) -> dict:
+        """Fetch video info with retry logic and exponential backoff."""
         for attempt in range(self.retry_attempts):
             try:
-                opts = {'extract_flat': True, 'quiet': True, 'cookiefile': self.cookies_path, 'noplaylist': True}
+                opts = {
+                    'quiet': True,
+                    'cookiefile': self.cookies_path,
+                    'noplaylist': True,
+                }
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-                if not info: raise DownloadError("No info extracted")
+                if not info:
+                    raise DownloadError("No info extracted")
                 return info
             except Exception as e:
-                if attempt == self.retry_attempts - 1: raise e
-                time.sleep(2 + attempt)
+                if attempt == self.retry_attempts - 1:
+                    raise e
+                sleep_time = (2 ** attempt) + random.uniform(0, 1)
+                logger.warning(f"Fetch attempt {attempt + 1}/{self.retry_attempts} failed for {url}. Retrying in {sleep_time:.1f}s...")
+                time.sleep(sleep_time)
 
     def _get_best_translation_source(self, transcript_list):
-        try: return transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
-        except: pass
-        try: return transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
-        except: pass
+        """Find the best transcript to use as translation source."""
+        try:
+            return transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
+        except Exception:
+            pass
+        try:
+            return transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
+        except Exception:
+            pass
         for t in transcript_list:
-            if t.is_translatable: return t
+            if t.is_translatable:
+                return t
         return None
 
     def _download_subtitles_api(self, videos: List[Dict], folder: Path, assigned_number: int):
+        """Download subtitles using the YouTube Transcript API with improved rate limiting."""
         for video in videos:
             vid_id = video.get('id')
             title = video.get('title')
             detected_lang = video.get('detected_lang')
             
-            if not vid_id: continue
+            if not vid_id:
+                logger.warning("No video ID provided, skipping subtitle download")
+                continue
+                
             base_filename = sanitize_filename(f"{assigned_number:02d}_{title}")
             
             try:
                 transcript_list = self.ytt_api.list(vid_id)
                 processed_langs = set()
 
-                # 1. Original
+                # 1. Download Original transcript
                 try:
                     original_transcript = None
                     if detected_lang:
-                        try: original_transcript = transcript_list.find_transcript([detected_lang])
-                        except: pass
+                        try:
+                            original_transcript = transcript_list.find_transcript([detected_lang])
+                        except Exception:
+                            pass
                     if not original_transcript:
                         for t in transcript_list:
                             if not t.is_generated:
                                 original_transcript = t
                                 break
-                    if not original_transcript: original_transcript = next(iter(transcript_list))
+                    if not original_transcript:
+                        original_transcript = next(iter(transcript_list), None)
                     
                     if original_transcript:
                         lang = original_transcript.language_code
                         logger.info(f"Downloading Original Subtitle ({lang})...")
                         self._save_transcript(original_transcript, folder, base_filename, lang)
                         processed_langs.add(lang)
-                        time.sleep(1)
-                except Exception: pass
+                        time.sleep(random.uniform(1, 2))
+                except Exception as e:
+                    logger.warning(f"Failed to get original transcript: {e}")
 
-                # 2. Direct Match
+                # 2. Direct Match for requested languages
                 for req_lang in self.subtitle_languages:
                     if any(l == req_lang or l.startswith(req_lang + '-') for l in processed_langs):
                         continue
@@ -461,8 +697,10 @@ class YouTubeDownloader:
                         time.sleep(random.uniform(1, 2))
                     except (NoTranscriptFound, ValueError):
                         pass
+                    except Exception as e:
+                        logger.warning(f"Error finding {req_lang} transcript: {e}")
 
-                # 3. Translation
+                # 3. Translate missing languages
                 missing_langs = []
                 for req in self.subtitle_languages:
                     if not any(l == req or l.startswith(req + '-') for l in processed_langs):
@@ -472,40 +710,57 @@ class YouTubeDownloader:
                     source = self._get_best_translation_source(transcript_list)
                     if source:
                         for req_lang in missing_langs:
-                            try:
-                                logger.info(f"Translating {source.language_code} -> {req_lang}...")
-                                translated = source.translate(req_lang)
-                                self._save_transcript(translated, folder, base_filename, req_lang)
-                                time.sleep(random.uniform(2, 4))
-                            except Exception as e:
-                                err = str(e).lower()
-                                if "blocking" in err or "too many requests" in err:
-                                    logger.warning("⚠️ Rate Limit Hit. Sleeping 45s...")
-                                    time.sleep(45)
-                                else:
-                                    logger.warning(f"Translation failed for {req_lang}")
+                            self._translate_with_retry(source, req_lang, folder, base_filename)
 
             except (TranscriptsDisabled, NoTranscriptFound):
                 logger.warning(f"No transcripts available for: {title}")
             except Exception as e:
                 logger.warning(f"Subtitle API Error on {title}: {e}")
 
-    def _save_transcript(self, transcript, folder, base_filename, lang_code):
+    def _translate_with_retry(self, source, req_lang: str, folder: Path, base_filename: str):
+        """Translate transcript with exponential backoff on rate limiting."""
+        for attempt in range(RATE_LIMIT_MAX_RETRIES):
+            try:
+                logger.info(f"Translating {source.language_code} -> {req_lang}...")
+                translated = source.translate(req_lang)
+                self._save_transcript(translated, folder, base_filename, req_lang)
+                time.sleep(random.uniform(2, 4))
+                return
+            except Exception as e:
+                err = str(e).lower()
+                if "blocking" in err or "too many requests" in err:
+                    sleep_time = RATE_LIMIT_INITIAL_SLEEP * (2 ** attempt)
+                    logger.warning(f"⚠️ Rate Limit Hit (attempt {attempt + 1}/{RATE_LIMIT_MAX_RETRIES}). Sleeping {sleep_time}s...")
+                    time.sleep(sleep_time)
+                else:
+                    logger.warning(f"Translation failed for {req_lang}: {e}")
+                    return
+        
+        logger.error(f"❌ Translation to {req_lang} failed after {RATE_LIMIT_MAX_RETRIES} retries")
+
+    def _save_transcript(self, transcript, folder: Path, base_filename: str, lang_code: str):
+        """Save transcript as both SRT and TXT formats."""
         try:
             fetched = transcript.fetch()
             suffix = ".auto" if transcript.is_generated else ""
             
+            # Save SRT
             srt_content = SRTFormatter().format_transcript(fetched)
             srt_path = folder / f"{base_filename}.{lang_code}{suffix}.srt"
             if not srt_path.exists() or srt_path.stat().st_size < 10:
-                with open(srt_path, "w", encoding="utf-8") as f: f.write(srt_content)
+                with open(srt_path, "w", encoding="utf-8") as f:
+                    f.write(srt_content)
                 logger.info(f"Saved SRT: {srt_path.name}")
+            else:
+                logger.info(f"SRT already exists: {srt_path.name}")
                 
+            # Save TXT
             txt_content = TextFormatter().format_transcript(fetched)
             txt_path = folder / f"{base_filename}.{lang_code}{suffix}.txt"
             if not txt_path.exists() or txt_path.stat().st_size < 10:
-                with open(txt_path, "w", encoding="utf-8") as f: f.write(txt_content)
+                with open(txt_path, "w", encoding="utf-8") as f:
+                    f.write(txt_content)
                 logger.info(f"Saved TXT: {txt_path.name}")
                 
         except Exception as e:
-            logger.error(f"Failed to save {lang_code}: {e}")
+            logger.error(f"Failed to save transcript {lang_code}: {e}")
