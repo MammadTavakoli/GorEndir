@@ -12,7 +12,6 @@ from urllib.parse import urlparse, parse_qs
 
 # Third-party imports
 import yt_dlp
-from tqdm import tqdm
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from youtube_transcript_api.formatters import SRTFormatter, TextFormatter
 
@@ -111,9 +110,6 @@ class YouTubeDownloader:
         # Initialize API Session
         self.api_session = self._setup_api_session()
         self.ytt_api = YouTubeTranscriptApi(http_client=self.api_session)
-        
-        # tqdm progress bar reference (used during downloads)
-        self._current_pbar: Optional[tqdm] = None
         
         self._print_ascii_art()
 
@@ -396,23 +392,14 @@ class YouTubeDownloader:
                     logger.warning(f"No videos to process for {url} (start_num={start_num} may exceed playlist length)")
                     continue
                     
-                # ── tqdm Progress Bar for playlist ──
-                pbar = tqdm(
-                    tasks_to_run,
-                    desc=f"📥 {collection_name[:40]}",
-                    unit="video",
-                    bar_format="{l_bar}{bar:30}{r_bar}",
-                    ncols=100,
-                )
+                # ── Playlist progress ──
+                logger.info(f"📥 Starting playlist: {collection_name[:60]} ({total_in_batch} videos)")
                 
-                for idx, (v_url, assigned_num) in enumerate(pbar):
-                    # Update tqdm postfix with current video info
-                    pbar.set_postfix_str(f"#{assigned_num:02d}")
-                    
+                for idx, (v_url, assigned_num) in enumerate(tasks_to_run):
                     # Only sleep after a successful download to avoid wasting time on failures/skips
                     if results['success']: 
                         sleep_time = random.uniform(5, 8)
-                        pbar.write(f"⏳ Waiting {sleep_time:.1f}s...")
+                        logger.info(f"⏳ Waiting {sleep_time:.1f}s...")
                         time.sleep(sleep_time)
 
                     res = self._process_single_task(
@@ -423,12 +410,12 @@ class YouTubeDownloader:
 
                     if res.get('skipped'):
                         results['skipped'].append(v_url)
-                        pbar.write(f"⏭️  Skipped: {v_url}")
+                        logger.info(f"⏭️  Skipped: {v_url}")
                     elif res.get('success'):
                         results['success'].append(v_url)
                     else:
                         results['failed'].append({'url': v_url, 'error': res.get('error', 'Unknown error')})
-                        pbar.write(f"❌ Failed: {res.get('error', 'Unknown error')[:60]}")
+                        logger.info(f"❌ Failed: {res.get('error', 'Unknown error')[:60]}")
 
                 if not skip_download and target_folder.exists():
                     process_directory(target_folder)
@@ -503,9 +490,6 @@ class YouTubeDownloader:
             if detected_lang:
                 logger.info(f"Detected Original Audio Language: {detected_lang}")
             
-            # Get video size for tqdm progress bar
-            video_size = self._get_video_size(info)
-            
             ydl_opts = {
                 **self._ydl_base_opts,
                 'format': f'bestvideo[height<={self.max_resolution}][ext=mp4]+bestaudio[ext=m4a]/best[height<={self.max_resolution}]',
@@ -528,17 +512,7 @@ class YouTubeDownloader:
             if skip:
                 ydl_opts.update({'simulate': True, 'skip_download': True})
             
-            # Create tqdm progress bar for individual video download
-            self._current_pbar = tqdm(
-                total=video_size,
-                unit='B',
-                unit_scale=True,
-                unit_divisor=1024,
-                desc=f"  📦 #{assigned_number:02d} {video_title[:35]}",
-                bar_format="{desc}: {percentage:3.0f}%|{bar:25}| {n_fmt}/{total_fmt} [{rate_fmt} ETA:{remaining}]",
-                ncols=100,
-                leave=True,
-            )
+            logger.info(f"  ⬇️  Downloading #{assigned_number:02d} — {video_title[:60]}")
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 try:
@@ -547,11 +521,6 @@ class YouTubeDownloader:
                     pass
                 playlist_info = ydl.extract_info(canonical, download=not skip) or {}
             
-            # Close the download progress bar
-            if self._current_pbar:
-                self._current_pbar.close()
-                self._current_pbar = None
-            
             if dl_subs and playlist_info:
                 videos = [{
                     'id': playlist_info.get('id'), 
@@ -559,79 +528,36 @@ class YouTubeDownloader:
                     'detected_lang': detected_lang
                 }]
                 self._download_subtitles_api(videos, target_folder, assigned_number)
-                
+            
+            logger.info(f"  ✅ Finished #{assigned_number:02d} — {video_title[:60]}")
             return {'success': True}
             
         except DownloadError as e:
-            if self._current_pbar:
-                self._current_pbar.close()
-                self._current_pbar = None
             if "already downloaded" in str(e):
                 return {'skipped': True, 'message': str(e)}
             return {'error': str(e)}
         except Exception as e:
-            if self._current_pbar:
-                self._current_pbar.close()
-                self._current_pbar = None
             logger.error(f"Error processing {canonical}: {e}")
             return {'error': str(e)}
 
-    def _get_video_size(self, info: dict) -> Optional[int]:
-        """Extract total video file size from info dict for progress bar."""
-        try:
-            # Try to get filesize from format info
-            filesize = info.get('filesize')
-            if filesize:
-                return filesize
-            
-            # Try filesize_approx
-            filesize = info.get('filesize_approx')
-            if filesize:
-                return int(filesize)
-            
-            # Calculate from requested formats
-            formats = info.get('requested_formats', [])
-            total = 0
-            for f in formats:
-                fs = f.get('filesize') or f.get('filesize_approx', 0)
-                if fs:
-                    total += int(fs)
-            if total > 0:
-                return total
-            
-            # Fallback: estimate from duration + resolution
-            duration = info.get('duration', 0)
-            if duration:
-                # Rough estimate: ~1MB per minute at 1080p
-                return int(duration * 1_000_000 / 60)
-            
-            return None
-        except Exception:
-            return None
-
     def _progress_hook(self, d: dict):
-        """yt-dlp progress hook — updates tqdm bar in real-time."""
+        """yt-dlp progress hook — logs progress at key milestones only."""
         if d['status'] == 'downloading':
-            if self._current_pbar:
-                downloaded = d.get('downloaded_bytes', 0)
-                total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-                
-                # Update total if we now know it
-                if total and self._current_pbar.total != total:
-                    self._current_pbar.total = total
-                    self._current_pbar.refresh()
-                
-                # Update progress
-                self._current_pbar.n = downloaded
-                self._current_pbar.refresh()
-                
+            # Only log at 25%, 50%, 75% milestones to reduce output noise
+            downloaded = d.get('downloaded_bytes', 0)
+            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+            if total > 0:
+                pct = int(downloaded / total * 100)
+                milestone = getattr(self, '_last_milestone', 0)
+                next_milestone = milestone + 25
+                if pct >= next_milestone:
+                    self._last_milestone = (pct // 25) * 25
+                    speed = d.get('speed', 0)
+                    speed_str = f"{speed/1024/1024:.1f}MB/s" if speed else "?"
+                    logger.info(f"  ⬇️  {pct}% ({downloaded/1024/1024:.1f}/{total/1024/1024:.1f}MB) [{speed_str}]")
         elif d['status'] == 'finished':
-            if self._current_pbar:
-                # Ensure bar reaches 100%
-                if self._current_pbar.total:
-                    self._current_pbar.n = self._current_pbar.total
-                self._current_pbar.refresh()
-                self._current_pbar.write("  ✅ Download finished, processing...")
+            self._last_milestone = 0
+            logger.info("  ✅ Download finished, processing...")
 
     def _fetch_info(self, url: str) -> dict:
         """Fetch video info with retry logic and exponential backoff."""
