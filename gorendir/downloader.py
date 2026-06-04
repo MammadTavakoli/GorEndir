@@ -62,6 +62,22 @@ logger = setup_logger()
 class DownloadError(Exception):
     pass
 
+class _YtdlpQuietLogger:
+    """Custom logger for yt-dlp that suppresses [download] progress lines.
+    
+    yt-dlp writes download progress to its internal logger even when quiet=True.
+    We intercept and drop those messages so only our tqdm progress bar is shown.
+    """
+    def debug(self, msg):
+        pass  # Suppress [download] progress and other debug messages
+    def warning(self, msg):
+        # Only forward important warnings, skip routine download noise
+        msg_str = str(msg).lower()
+        if any(kw in msg_str for kw in ['error', 'fail', 'sign in', 'bot', 'age-restrict', 'unavailable']):
+            logger.warning(f"[yt-dlp] {msg}")
+    def error(self, msg):
+        logger.error(f"[yt-dlp] {msg}")
+
 class YouTubeDownloader:
     
     def __init__(
@@ -83,6 +99,13 @@ class YouTubeDownloader:
         self.retry_attempts = retry_attempts
         self.timeout = timeout
         self.cookies_path = cookies_path
+
+        # Base options for all yt-dlp calls (includes remote components for JS challenge solving)
+        self._ydl_base_opts = {
+            'cookiefile': self.cookies_path,
+            'remote_components': ['ejs:github'],
+        }
+
         self.downloaded_urls = self._load_downloaded_urls()
         
         # Initialize API Session
@@ -292,7 +315,7 @@ class YouTubeDownloader:
             logger.info(f"Analyzing input: {url} (start from #{start_num})")
             
             try:
-                with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True, 'cookiefile': self.cookies_path}) as ydl:
+                with yt_dlp.YoutubeDL({**self._ydl_base_opts, 'extract_flat': True, 'quiet': True, 'logger': _YtdlpQuietLogger()}) as ydl:
                     info = ydl.extract_info(url, download=False)
 
                 if info is None:
@@ -463,7 +486,7 @@ class YouTubeDownloader:
         # Get Title for UI display
         video_title = canonical
         try:
-            with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'cookiefile': self.cookies_path}) as ydl:
+            with yt_dlp.YoutubeDL({**self._ydl_base_opts, 'quiet': True, 'extract_flat': True, 'logger': _YtdlpQuietLogger()}) as ydl:
                 pre_info = ydl.extract_info(canonical, download=False)
                 if pre_info:
                     video_title = pre_info.get('title', canonical)
@@ -484,6 +507,7 @@ class YouTubeDownloader:
             video_size = self._get_video_size(info)
             
             ydl_opts = {
+                **self._ydl_base_opts,
                 'format': f'bestvideo[height<={self.max_resolution}][ext=mp4]+bestaudio[ext=m4a]/best[height<={self.max_resolution}]',
                 'paths': {'home': str(target_folder)},
                 'outtmpl': f'{assigned_number:02d}_%(title)s.%(ext)s', 
@@ -493,7 +517,8 @@ class YouTubeDownloader:
                 'continue_dl': True,
                 'quiet': True,
                 'no_warnings': True,
-                'cookiefile': self.cookies_path,
+                'noprogress': True,          # Suppress yt-dlp's own [download] progress
+                'logger': _YtdlpQuietLogger(),  # Custom logger to suppress download noise
                 'writesubtitles': write_subs,
                 'writeautomaticsub': True,
                 'subtitleslangs': self.subtitle_languages,
@@ -613,9 +638,10 @@ class YouTubeDownloader:
         for attempt in range(self.retry_attempts):
             try:
                 opts = {
+                    **self._ydl_base_opts,
                     'quiet': True,
-                    'cookiefile': self.cookies_path,
                     'noplaylist': True,
+                    'logger': _YtdlpQuietLogger(),
                 }
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
