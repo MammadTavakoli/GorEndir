@@ -240,48 +240,39 @@ class YouTubeDownloader:
                     target_folder.mkdir(parents=True, exist_ok=True)
                     
                     entries = list(info['entries'])
-                    total_original_entries = len(entries)
-                    tasks_to_run = []
-
-                    # === منطق پیشرفته برای پلی‌لیست‌ها (پشتیبانی کامل از معکوس و شروع دلخواه) ===
+                    total_entries = len(entries)
+                    
+                    # --- منطق اصلاح شده و ترکیب شده با حالت برعکس ---
                     if reverse_download:
-                        # در حالت معکوس: ابتدا ویدیوهای بعد از start_num را حذف می‌کنیم
-                        if start_num > 1:
-                            if start_num <= total_original_entries:
-                                entries = entries[:start_num] # فقط ویدیوهای 1 تا X را نگه می‌دارد
-                            else:
-                                logger.warning(f"Start number {start_num} is greater than playlist length ({total_original_entries}).")
-                                entries = []
-                        
-                        # سپس لیست باقی‌مانده را برعکس می‌کنیم (مثلا می‌شود 8, 7, 6...)
+                        # ۱. ابتدا لیست را برعکس می‌کنیم (آخرین ویدیو می‌شود ایندکس 0)
                         entries.reverse()
+                        logger.info("Reverse download enabled. Ordering from last to first.")
                         
-                        # شماره‌گذاری فایل‌ها باید از start_num به سمت پایین باشد
-                        # تا ترتیب پلی‌لیست اصلی در نام فایل‌ها حفظ شود
-                        original_max_num = start_num if start_num > 1 else total_original_entries
-                        
-                        for i, entry in enumerate(entries):
-                            if entry:
-                                v_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}"
-                                assigned_num = original_max_num - i
-                                tasks_to_run.append((v_url, assigned_num))
+                        if start_num > 1:
+                            # ۲. در حالت برعکس، اسکیپ کردن یعنی حذف از ابتدای لیست برعکس شده
+                            skip_count = start_num - 1
+                            if skip_count < total_entries:
+                                logger.info(f"Skipping last {skip_count} videos. Starting from reverse index {start_num}")
+                                entries = entries[skip_count:]
+                            else:
+                                logger.warning(f"Start number {start_num} is greater than playlist length ({total_entries}).")
+                                entries = []
                     else:
-                        # در حالت عادی: ویدیوهای قبل از start_num را حذف می‌کنیم
+                        # حالت عادی (Forward)
                         if start_num > 1:
                             start_index = start_num - 1
-                            if start_index < total_original_entries:
+                            if start_index < total_entries:
+                                logger.info(f"Skipping to video {start_num} (Index {start_index})")
                                 entries = entries[start_index:]
                             else:
-                                logger.warning(f"Start number {start_num} is greater than playlist length ({total_original_entries}).")
+                                logger.warning(f"Start number {start_num} is greater than playlist length ({total_entries}).")
                                 entries = []
+                    # -----------------------------------------------------
                         
-                        # شماره‌گذاری رو به بالا (مثلا 8, 9, 10...)
-                        for i, entry in enumerate(entries):
-                            if entry:
-                                v_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}"
-                                tasks_to_run.append((v_url, start_num + i))
-                    # ==========================================================================
-
+                    for i, entry in enumerate(entries):
+                        if entry:
+                            v_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}"
+                            tasks_to_run.append((v_url, start_num + i))
                 else:
                     # SINGLE VIDEO
                     collection_name = f"Single: {title}"
