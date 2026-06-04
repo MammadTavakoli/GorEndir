@@ -240,24 +240,48 @@ class YouTubeDownloader:
                     target_folder.mkdir(parents=True, exist_ok=True)
                     
                     entries = list(info['entries'])
-                    
-                    # --- بخش اصلاح شده برای شروع از ویدیوی مشخص شده ---
-                    if start_num > 1:
-                        start_index = start_num - 1
-                        if start_index < len(entries):
-                            logger.info(f"Skipping to video {start_num} (Index {start_index})")
-                            entries = entries[start_index:]
-                        else:
-                            logger.warning(f"Start number {start_num} is greater than playlist length ({len(entries)}).")
-                            entries = [] # لیست خالی می‌شود تا چیزی دانلود نشود
-                    # -----------------------------------------------------
+                    total_original_entries = len(entries)
+                    tasks_to_run = []
+
+                    # === منطق پیشرفته برای پلی‌لیست‌ها (پشتیبانی کامل از معکوس و شروع دلخواه) ===
+                    if reverse_download:
+                        # در حالت معکوس: ابتدا ویدیوهای بعد از start_num را حذف می‌کنیم
+                        if start_num > 1:
+                            if start_num <= total_original_entries:
+                                entries = entries[:start_num] # فقط ویدیوهای 1 تا X را نگه می‌دارد
+                            else:
+                                logger.warning(f"Start number {start_num} is greater than playlist length ({total_original_entries}).")
+                                entries = []
                         
-                    if reverse_download: entries.reverse()
+                        # سپس لیست باقی‌مانده را برعکس می‌کنیم (مثلا می‌شود 8, 7, 6...)
+                        entries.reverse()
                         
-                    for i, entry in enumerate(entries):
-                        if entry:
-                            v_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}"
-                            tasks_to_run.append((v_url, start_num + i))
+                        # شماره‌گذاری فایل‌ها باید از start_num به سمت پایین باشد
+                        # تا ترتیب پلی‌لیست اصلی در نام فایل‌ها حفظ شود
+                        original_max_num = start_num if start_num > 1 else total_original_entries
+                        
+                        for i, entry in enumerate(entries):
+                            if entry:
+                                v_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}"
+                                assigned_num = original_max_num - i
+                                tasks_to_run.append((v_url, assigned_num))
+                    else:
+                        # در حالت عادی: ویدیوهای قبل از start_num را حذف می‌کنیم
+                        if start_num > 1:
+                            start_index = start_num - 1
+                            if start_index < total_original_entries:
+                                entries = entries[start_index:]
+                            else:
+                                logger.warning(f"Start number {start_num} is greater than playlist length ({total_original_entries}).")
+                                entries = []
+                        
+                        # شماره‌گذاری رو به بالا (مثلا 8, 9, 10...)
+                        for i, entry in enumerate(entries):
+                            if entry:
+                                v_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}"
+                                tasks_to_run.append((v_url, start_num + i))
+                    # ==========================================================================
+
                 else:
                     # SINGLE VIDEO
                     collection_name = f"Single: {title}"
