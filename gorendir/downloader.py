@@ -240,6 +240,18 @@ class YouTubeDownloader:
                     target_folder.mkdir(parents=True, exist_ok=True)
                     
                     entries = list(info['entries'])
+                    
+                    # --- بخش اصلاح شده برای شروع از ویدیوی مشخص شده ---
+                    if start_num > 1:
+                        start_index = start_num - 1
+                        if start_index < len(entries):
+                            logger.info(f"Skipping to video {start_num} (Index {start_index})")
+                            entries = entries[start_index:]
+                        else:
+                            logger.warning(f"Start number {start_num} is greater than playlist length ({len(entries)}).")
+                            entries = [] # لیست خالی می‌شود تا چیزی دانلود نشود
+                    # -----------------------------------------------------
+                        
                     if reverse_download: entries.reverse()
                         
                     for i, entry in enumerate(entries):
