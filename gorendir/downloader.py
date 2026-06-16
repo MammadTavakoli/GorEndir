@@ -1,4 +1,5 @@
 import os
+import ssl
 import time
 import json
 import random
@@ -16,6 +17,33 @@ try:
     requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 except Exception:
     pass
+
+# Track whether the global SSL context has been disabled.
+# This is set by YouTubeDownloader.__init__ when verify_ssl=False.
+_SSL_GLOBALLY_DISABLED = False
+
+def _disable_ssl_verification_globally():
+    """Disable HTTPS certificate verification for the ENTIRE Python process.
+
+    yt-dlp's `nocheckcertificate` option only affects its main urllib opener.
+    The YouTube extractor's "API page" download uses a separate code path that
+    IGNORES `nocheckcertificate` and still fails with CERTIFICATE_VERIFY_FAILED
+    when a corporate proxy / antivirus injects self-signed certificates.
+
+    The only bulletproof fix is to replace Python's default SSL context factory
+    so ALL HTTPS connections (yt-dlp, requests, urllib, http.client) skip
+    certificate verification. This is insecure on public networks — only use
+    on trusted local machines behind SSL-inspecting proxies.
+    """
+    global _SSL_GLOBALLY_DISABLED
+    if _SSL_GLOBALLY_DISABLED:
+        return
+    # Replace the default HTTPS context factory with an unverified one.
+    # http.client, urllib, and requests all ultimately call this.
+    ssl._create_default_https_context = ssl._create_unverified_context
+    # Also replace create_default_context itself for completeness.
+    ssl.create_default_context = ssl._create_unverified_context
+    _SSL_GLOBALLY_DISABLED = True
 
 # Third-party imports
 import yt_dlp
@@ -122,10 +150,17 @@ class YouTubeDownloader:
         }
 
         if not self.verify_ssl:
+            # CRITICAL: Patch the ssl module GLOBALLY so ALL HTTPS connections
+            # skip certificate verification. yt-dlp's `nocheckcertificate` option
+            # alone is NOT enough — the YouTube extractor's "API page" download
+            # uses a separate code path that ignores it and still fails with
+            # CERTIFICATE_VERIFY_FAILED behind SSL-inspecting proxies/antivirus.
+            _disable_ssl_verification_globally()
             logger.warning(
-                "⚠️ SSL certificate verification is DISABLED. "
-                "This is insecure on public networks. Use only on trusted local "
-                "machines where a corporate proxy or antivirus performs SSL inspection."
+                "⚠️ SSL certificate verification is DISABLED GLOBALLY for this process. "
+                "All HTTPS connections (yt-dlp, requests, urllib) will skip cert checks. "
+                "This is insecure on public networks — use only on trusted local machines "
+                "where a corporate proxy or antivirus performs SSL inspection."
             )
 
         # Detect FFmpeg. Without it, yt-dlp downloads video + audio as SEPARATE
