@@ -94,7 +94,8 @@ class YouTubeDownloader:
         retry_attempts: int = 3,
         timeout: int = 30,
         cookies_path: Optional[str] = None,
-        verify_ssl: bool = True
+        verify_ssl: bool = True,
+        ffmpeg_location: Optional[str] = None
     ):
         self.save_directory = Path(save_directory).resolve()
         self.save_directory.mkdir(parents=True, exist_ok=True)
@@ -107,6 +108,7 @@ class YouTubeDownloader:
         self.timeout = timeout
         self.cookies_path = cookies_path
         self.verify_ssl = verify_ssl
+        self.ffmpeg_location = ffmpeg_location
 
         # Base options for all yt-dlp calls
         # - remote_components: solve YouTube's JS n-challenge via EJS
@@ -124,6 +126,23 @@ class YouTubeDownloader:
                 "⚠️ SSL certificate verification is DISABLED. "
                 "This is insecure on public networks. Use only on trusted local "
                 "machines where a corporate proxy or antivirus performs SSL inspection."
+            )
+
+        # Detect FFmpeg. Without it, yt-dlp downloads video + audio as SEPARATE
+        # files (.f137.mp4 + .f140.m4a) and cannot merge them into a single file.
+        self._ffmpeg_path = self._detect_ffmpeg()
+        if self._ffmpeg_path:
+            logger.info(f"FFmpeg detected: {self._ffmpeg_path}")
+            self._ydl_base_opts['ffmpeg_location'] = self._ffmpeg_path
+        else:
+            logger.warning(
+                "⚠️ FFmpeg NOT found! Video and audio will be downloaded as SEPARATE "
+                "files (.fXXX.mp4 + .fXXX.m4a) and will NOT be merged into a single video.\n"
+                "   To fix this and get a single merged file:\n"
+                "     1. Install FFmpeg: https://ffmpeg.org/download.html\n"
+                "     2. Add it to your system PATH, OR\n"
+                "     3. Pass ffmpeg_location='/path/to/ffmpeg' (or its bin folder) to YouTubeDownloader\n"
+                "     4. Or run: pip install imageio-ffmpeg (auto-detected by gorendir)"
             )
 
         self.downloaded_urls = self._load_downloaded_urls()
@@ -215,6 +234,92 @@ class YouTubeDownloader:
             except Exception as e:
                 logger.warning(f"Failed to load cookies: {e}")
         return session
+
+    def _detect_ffmpeg(self) -> Optional[str]:
+        """Detect the FFmpeg executable path.
+
+        Search order:
+          1. Explicit `ffmpeg_location` passed by the user (file or directory)
+          2. `ffmpeg` on the system PATH (shutil.which)
+          3. `imageio_ffmpeg` package, if installed
+        Returns the executable path if found, else None.
+        """
+        import shutil
+
+        # 1. Explicit location
+        if self.ffmpeg_location:
+            loc = self.ffmpeg_location
+            if os.path.isfile(loc):
+                return loc
+            if os.path.isdir(loc):
+                for name in ('ffmpeg', 'ffmpeg.exe'):
+                    candidate = os.path.join(loc, name)
+                    if os.path.isfile(candidate):
+                        return candidate
+
+        # 2. System PATH
+        path = shutil.which('ffmpeg')
+        if path:
+            return path
+
+        # 3. imageio_ffmpeg (optional dependency that bundles an FFmpeg binary)
+        try:
+            import imageio_ffmpeg
+            exe = imageio_ffmpeg.get_ffmpeg_exe()
+            if exe and os.path.isfile(exe):
+                return exe
+        except Exception:
+            pass
+
+        return None
+
+    def _cleanup_orphaned_partials(self, folder: Path):
+        """Remove orphaned yt-dlp partial files (.f137.mp4, .f140.m4a, ...).
+
+        When a merge succeeds, yt-dlp deletes these temp files automatically.
+        When FFmpeg is missing or a merge fails, they are left behind. We remove
+        a partial file only if a corresponding merged output (same base name
+        prefix, without the `.fXXX.` segment) already exists, so we never delete
+        data the user might still need.
+
+        Example:
+            01_title.f137.mp4  (video partial)  -> base prefix "01_title"
+            01_title.f140.m4a  (audio partial)  -> base prefix "01_title"
+            01_title.mp4       (merged output)  -> matches base prefix, so both
+                                                  partials above are removed.
+        """
+        try:
+            import re as _re
+            partial_re = _re.compile(r'\.f\d+\.')
+            removed = 0
+            # Build a set of all files in the folder for quick lookup.
+            all_files = {p.name: p for p in folder.iterdir() if p.is_file()}
+            for partial in list(folder.glob('*.f[0-9]*.*')):
+                name = partial.name
+                if not partial_re.search(name):
+                    continue
+                # Extract base prefix: "01_title.f137.mp4" -> "01_title"
+                base = name.split('.f')[0]
+                # Look for ANY merged output file starting with "<base>." that
+                # does NOT itself contain a ".f<digits>." partial segment.
+                has_merged = False
+                for cname, cpath in all_files.items():
+                    if cname == name:
+                        continue
+                    if cname.startswith(base + '.') and not partial_re.search(cname):
+                        try:
+                            if cpath.stat().st_size > 0:
+                                has_merged = True
+                                break
+                        except Exception:
+                            pass
+                if has_merged:
+                    partial.unlink()
+                    removed += 1
+            if removed:
+                logger.info(f"🧹 Cleaned up {removed} orphaned partial file(s) in {folder.name}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up partial files: {e}")
 
     def _load_downloaded_urls(self) -> set:
         log_file = self.save_directory / "_urls.txt"
@@ -517,9 +622,21 @@ class YouTubeDownloader:
             if detected_lang:
                 logger.info(f"Detected Original Audio Language: {detected_lang}")
             
+            # Format selection:
+            #   - With FFmpeg: download best video + best audio separately, then
+            #     merge into a single .mp4 (high quality, up to max_resolution).
+            #   - Without FFmpeg: fall back to a single pre-merged stream so the
+            #     user still gets ONE file (lower quality, but no orphaned .fXXX files).
+            if self._ffmpeg_path:
+                video_format = (f'bestvideo[height<={self.max_resolution}][ext=mp4]'
+                                f'+bestaudio[ext=m4a]/best[height<={self.max_resolution}]')
+            else:
+                video_format = f'best[height<={self.max_resolution}][ext=mp4]/best[height<={self.max_resolution}]'
+
             ydl_opts = {
                 **self._ydl_base_opts,
-                'format': f'bestvideo[height<={self.max_resolution}][ext=mp4]+bestaudio[ext=m4a]/best[height<={self.max_resolution}]',
+                'format': video_format,
+                'merge_output_format': 'mp4',  # Force merge to mp4 when video+audio are separate
                 'paths': {'home': str(target_folder)},
                 'outtmpl': f'{assigned_number:02d}_%(title)s.%(ext)s', 
                 'noplaylist': True,
@@ -556,6 +673,10 @@ class YouTubeDownloader:
                 }]
                 self._download_subtitles_api(videos, target_folder, assigned_number)
             
+            # Clean up any orphaned partial files (.f137.mp4 / .f140.m4a) left
+            # behind when FFmpeg is missing or a previous merge failed.
+            self._cleanup_orphaned_partials(target_folder)
+
             logger.info(f"  ✅ Finished #{assigned_number:02d} — {video_title[:60]}")
             return {'success': True}
             
