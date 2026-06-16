@@ -10,6 +10,13 @@ from pathlib import Path
 from typing import List, Dict, Optional, Union, Tuple
 from urllib.parse import urlparse, parse_qs
 
+# Suppress InsecureRequestWarning when verify_ssl=False
+try:
+    from urllib3.exceptions import InsecureRequestWarning
+    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+except Exception:
+    pass
+
 # Third-party imports
 import yt_dlp
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
@@ -86,7 +93,8 @@ class YouTubeDownloader:
         max_resolution: int = DEFAULT_MAX_RESOLUTION,
         retry_attempts: int = 3,
         timeout: int = 30,
-        cookies_path: Optional[str] = None
+        cookies_path: Optional[str] = None,
+        verify_ssl: bool = True
     ):
         self.save_directory = Path(save_directory).resolve()
         self.save_directory.mkdir(parents=True, exist_ok=True)
@@ -98,12 +106,25 @@ class YouTubeDownloader:
         self.retry_attempts = retry_attempts
         self.timeout = timeout
         self.cookies_path = cookies_path
+        self.verify_ssl = verify_ssl
 
-        # Base options for all yt-dlp calls (includes remote components for JS challenge solving)
+        # Base options for all yt-dlp calls
+        # - remote_components: solve YouTube's JS n-challenge via EJS
+        # - nocheckcertificate: disable SSL verification when verify_ssl=False
+        #   (needed on local machines behind corporate proxies / antivirus SSL
+        #    inspection that inject self-signed certificates into the chain)
         self._ydl_base_opts = {
             'cookiefile': self.cookies_path,
             'remote_components': ['ejs:github'],
+            'nocheckcertificate': not self.verify_ssl,
         }
+
+        if not self.verify_ssl:
+            logger.warning(
+                "⚠️ SSL certificate verification is DISABLED. "
+                "This is insecure on public networks. Use only on trusted local "
+                "machines where a corporate proxy or antivirus performs SSL inspection."
+            )
 
         self.downloaded_urls = self._load_downloaded_urls()
         
@@ -178,6 +199,12 @@ class YouTubeDownloader:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
         })
+
+        # Honor verify_ssl for the youtube_transcript_api requests session too.
+        # When False, requests will skip certificate verification (same effect
+        # as yt-dlp's `nocheckcertificate`).
+        if not self.verify_ssl:
+            session.verify = False
 
         if self.cookies_path and os.path.exists(self.cookies_path):
             try:
